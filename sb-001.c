@@ -135,26 +135,26 @@ static unsigned w1_read() {
 
 static unsigned w1_read_byte() {
 	unsigned result = 0;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x01;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x02;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x04;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x08;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x10;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x20;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x40;
-	if(w1_read(io_port_b, DS18B20_MASK)) result |= 0x80;
+	if(w1_read()) result |= 0x01;
+	if(w1_read()) result |= 0x02;
+	if(w1_read()) result |= 0x04;
+	if(w1_read()) result |= 0x08;
+	if(w1_read()) result |= 0x10;
+	if(w1_read()) result |= 0x20;
+	if(w1_read()) result |= 0x40;
+	if(w1_read()) result |= 0x80;
 	return result;
 }
 
 static void w1_write_byte(unsigned data) {
-	data & 0x01 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x02 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x04 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x08 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x10 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x20 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x40 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
-	data & 0x80 ? w1_write_1(io_port_b, DS18B20_MASK) : w1_write_0(io_port_b, DS18B20_MASK);
+	data & 0x01 ? w1_write_1() : w1_write_0();
+	data & 0x02 ? w1_write_1() : w1_write_0();
+	data & 0x04 ? w1_write_1() : w1_write_0();
+	data & 0x08 ? w1_write_1() : w1_write_0();
+	data & 0x10 ? w1_write_1() : w1_write_0();
+	data & 0x20 ? w1_write_1() : w1_write_0();
+	data & 0x40 ? w1_write_1() : w1_write_0();
+	data & 0x80 ? w1_write_1() : w1_write_0();
 }
 
 static unsigned ds18b20_reset() {
@@ -236,7 +236,7 @@ static int counter_main(int argc, char* argv[]) {
 
 static int lm75() {
 	if(fork()) return 1;
-	fprintf(stderr, "lm75===>>\n");
+	fprintf(stderr, "lm75   ===>>\n");
 	name = "lm75";
 	type = "temp";
 	int fd = open("/dev/i2c-0", O_RDWR);
@@ -261,7 +261,7 @@ static int lm75() {
 		lib_check_print_float(temp, &old);
 	}
 	close(fd);
-	fprintf(stderr, "lm75===<<\n");
+	fprintf(stderr, "lm75   ===<<\n");
 	return 0;
 }
 
@@ -300,7 +300,7 @@ static int adc_read(float* val) {
 
 static int adc() {
 	if(fork()) return 1;
-	fprintf(stderr, "adc===>>\n");
+	fprintf(stderr, "adc    ===>>\n");
 	name = "adc";
 	type = "light";
 	if(adc_enable()) {
@@ -314,7 +314,7 @@ static int adc() {
 		}
 		lib_check_print_float(val, &old);
 	}
-	fprintf(stderr, "adc===<<\n");
+	fprintf(stderr, "adc    ===<<\n");
 	return 0;
 }
 

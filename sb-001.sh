@@ -24,7 +24,7 @@ data() {
 
 while sleep 10
 do
-	curl -X POST -d "$(data)" http://www.seismoinstruments.am/insert.php
+	curl -s -X POST -d "$(data)" http://www.seismoinstruments.am/insert.php
 	echo -e ".timeout 1000\ndelete from data;" | sqlite3 $dbfile
 done &
 
