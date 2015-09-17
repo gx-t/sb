@@ -29,6 +29,35 @@ enum {
 	ERR_READADC
 };
 
+enum {
+	DEV_DS18B20,
+	DEV_LM75,
+	DEV_ADC,
+
+	DEV_LAST
+};
+
+enum {
+	CMD_SDATA,
+	CMD_FLUSH,
+
+
+	CMD_LAST
+};
+
+struct CMD_SDATA {
+	unsigned char cmd; //enum CMD_SDATA
+	unsigned char dev;
+	unsigned char lun;
+	time_t time;
+	float val;
+} __attribute__((packed));
+
+struct CMD_FLUSH {
+	unsigned cmd;
+	time_t time;
+} __attribute__((packed));
+
 #define PIO_B(_b)					((AT91S_PIO*)(_b + 0x600))
 #define PMC(_b)						((AT91S_PMC*)(_b + 0xC00))
 
@@ -59,23 +88,6 @@ static const char* type = 0;
 static void ctrl_c(int sig) {
 	(void)sig;
 	g_run = 0;
-}
-
-static void lib_check_print_float(float val, float* old) {
-	if(val == *old) return;
-	//LED on
-	io_port_b->PIO_SODR = LED0_MASK;
-	time_t t0;
-	time(&t0);
-	struct tm* t1 = gmtime(&t0);
-	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s\', \'%g\', \'%s\', \'%s\');\n",
-	tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
-	name, val, key, type);
-	fflush(stdout);
-	//LED off
-	io_port_b->PIO_CODR = LED0_MASK;
-	//new value => old value
-	*old = val;
 }
 
 static void* lib_open_base(off_t offset) {
@@ -174,8 +186,6 @@ static unsigned ds18b20_reset() {
 static int ds18b20() {
 	if(fork()) return 1;
 	fprintf(stderr, "ds18b20===>>\n");
-	name = "ds18b20";
-	type = "temp";
 	io_port_b->PIO_PER = DS18B20_MASK;;
 	io_port_b->PIO_PPUER = DS18B20_MASK; //enable pull up
 	if(ds18b20_reset()) {
@@ -197,8 +207,13 @@ static int ds18b20() {
 		io_port_b->PIO_OER = DS18B20_MASK; //enable output
 		io_port_b->PIO_CODR = DS18B20_MASK; //level low
 		temp /= 16;
-		lib_check_print_float(temp, &old);
-		usleep(750000);
+		if(temp != old) {
+			io_port_b->PIO_SODR = LED0_MASK;
+			struct CMD_SDATA data = {CMD_SDATA, DEV_DS18B20, 0, time(0), temp};
+			write(1, &data, sizeof(data));
+			io_port_b->PIO_CODR = LED0_MASK;
+			old = temp;
+		}
 		io_port_b->PIO_ODR = DS18B20_MASK; //disable output
 
 		//start conversion
@@ -260,7 +275,12 @@ static int lm75() {
 			break;
 		}
 		float temp = (float)((short)buff[0] << 8 | buff[1]) / 256;
-		lib_check_print_float(temp, &old);
+		if(temp == old) continue;
+		io_port_b->PIO_SODR = LED0_MASK;
+		struct CMD_SDATA data = {CMD_SDATA, DEV_LM75, 0, time(0), temp};
+		write(1, &data, sizeof(data));
+		io_port_b->PIO_CODR = LED0_MASK;
+		old = temp;
 	}
 	close(fd);
 	fprintf(stderr, "lm75   ===<<\n");
@@ -314,7 +334,12 @@ static int adc() {
 		if(adc_read(&val)) {
 			break;
 		}
-		lib_check_print_float(val, &old);
+		if(val == old) continue;
+		io_port_b->PIO_SODR = LED0_MASK;
+		struct CMD_SDATA data = {CMD_SDATA, DEV_ADC, 0, time(0), val};
+		write(1, &data, sizeof(data));
+		io_port_b->PIO_CODR = LED0_MASK;
+		old = val;
 	}
 	fprintf(stderr, "adc    ===<<\n");
 	return 0;
@@ -324,20 +349,15 @@ static int send_clock(int period) {
 	if(fork()) return 1;
 	if(period < 1) period = 1;
 	fprintf(stderr, "clock  ===>>\n");
-	printf("begin transaction;\n"
-			".timeout 1000\n"
-			"create table if not exists data(time timestamp, name text, val text, key text, type text);\n");
-	fflush(stdout);
+	struct CMD_FLUSH flush = {CMD_FLUSH};
 	while(g_run && !sleep(period)) {
 		io_port_b->PIO_SODR = LED1_MASK;
-		printf("commit;\n");
-		fflush(stdout);
-		printf("begin transaction;\n");
-		fflush(stdout);
+		flush.time = time(0);
+		write(1, &flush, sizeof(flush));
 		io_port_b->PIO_CODR = LED1_MASK;
 	}
-	usleep(200000);
-	printf("commit;\n");
+	flush.time = time(0);
+	write(1, &flush, sizeof(flush));
 	fflush(stdout);
 	fprintf(stderr, "clock  ===<<\n");
 	return 0;
@@ -359,11 +379,62 @@ static int dev_main(int argc, char* argv[]) {
 	return ERR_OK;
 }
 
+static const char* dev_name(unsigned char dev_id) {
+	if(dev_id >= DEV_LAST) {
+		return "Unknown";
+	}
+	static const char* name_arr[] = {
+		"ds18b20",
+		"lm75",
+		"adc"
+	};
+	return name_arr[dev_id];
+}
+
+static const char* dev_type(unsigned char dev_id) {
+	if(dev_id >= DEV_LAST) {
+		return "Unknown";
+	}
+	static const char* type_arr[] = {
+		"temp",
+		"temp",
+		"analog"
+	};
+	return type_arr[dev_id];
+}
+
+static void read_sdata(struct CMD_SDATA* data) {
+	time_t t0 = data->time;
+	struct tm* t1 = gmtime(&t0);
+	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s-%d\', \'%g\', \'%s\', \'%s\');\n",
+		"data", t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
+		dev_name(data->dev), data->lun, data->val, "key", dev_type(data->dev));
+}
+
+static void read_flush(struct CMD_FLUSH* data) {
+//	printf("===CMD_FLUSH: 0x%02X, 0x%08lX\n", data->cmd, data->time);
+	printf("commit;\nbegin transaction;\n");
+}
+
 static int read_main(int argc, char* argv[]) {
 	signal(SIGINT, SIG_IGN);
 	chdir("outbox");
-	char buff[0x1000], fname[0x32];
-	FILE* pf = 0;
+	char fname[0x32];
+	unsigned char data[32];
+	static void (*arr[])() ={
+		read_sdata,
+		read_flush
+	};
+	printf("begin transaction;\n");
+	while(0 < read(0, data, sizeof(data))) {
+		if(data[0] >= CMD_LAST) {
+			fprintf(stderr, "Invalid command: 0x%02X, ignoring\n", data[0]);
+			continue;
+		}
+		arr[data[0]](data);
+	}
+	printf("commit;\n");
+#if 0
 	while(fgets(buff, sizeof(buff), stdin)) {
 		if(!strcmp("begin transaction;\n", buff)) {
 			printf("=======>>\n");
@@ -381,6 +452,7 @@ static int read_main(int argc, char* argv[]) {
 		}
 		fprintf(pf, "%s", buff);
 	}
+#endif
 	return ERR_OK;
 }
 
