@@ -15,6 +15,7 @@
 enum {
 	ERR_OK = 0,
 	ERR_ARGC,
+	ERR_PIPE,
 	ERR_CMD,
 	ERR_MMAP,
 	ERR_PIN,
@@ -50,6 +51,7 @@ static volatile AT91S_PIO* io_port_b = 0;
 static volatile AT91S_TCB* tcb_base  = 0;
 
 static const char* key  = 0;
+static const char* tbl  = 0;
 static const char* name = 0;
 static const char* type = 0;
 
@@ -66,8 +68,8 @@ static void lib_check_print_float(float val, float* old) {
 	time_t t0;
 	time(&t0);
 	struct tm* t1 = gmtime(&t0);
-	printf("insert into data values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s\', \'%g\', \'%s\', \'%s\');\n",
-	t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
+	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s\', \'%g\', \'%s\', \'%s\');\n",
+	tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
 	name, val, key, type);
 	fflush(stdout);
 	//LED off
@@ -318,25 +320,76 @@ static int adc() {
 	return 0;
 }
 
-static void sql_init() {
-	printf(".timeout 1000\ncreate table if not exists data(time timestamp, name text, val text, key text, type text);\n");
+static int send_clock(int period) {
+	if(fork()) return 1;
+	if(period < 1) period = 1;
+	fprintf(stderr, "clock  ===>>\n");
+	printf("begin transaction;\n"
+			".timeout 1000\n"
+			"create table if not exists data(time timestamp, name text, val text, key text, type text);\n");
 	fflush(stdout);
+	while(g_run && !sleep(period)) {
+		io_port_b->PIO_SODR = LED1_MASK;
+		printf("commit;\n");
+		fflush(stdout);
+		printf("begin transaction;\n");
+		fflush(stdout);
+		io_port_b->PIO_CODR = LED1_MASK;
+	}
+	usleep(200000);
+	printf("commit;\n");
+	fflush(stdout);
+	fprintf(stderr, "clock  ===<<\n");
+	return 0;
 }
 
-int main(int argc, char* argv[]) {
-	if(argc != 2) return ERR_ARGC;
+static int dev_main(int argc, char* argv[]) {
 	signal(SIGINT, ctrl_c);
 	key = argv[1];
+	tbl = argv[2];
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	tcb_base = lib_open_base((off_t)AT91C_BASE_TC0);
 	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK;
-	io_port_b->PIO_OER = LED1_MASK;
-	sql_init();
-	int res = ds18b20() && lm75() && adc();
+	io_port_b->PIO_PER = LED0_MASK | LED1_MASK;
+	io_port_b->PIO_OER = LED0_MASK | LED1_MASK;
+	int res = send_clock(atoi(argv[3])) && !sleep(1) && ds18b20() && lm75() && adc();
 	while(res && -1 != wait(0));
 	lib_close_base(tcb_base);
 	lib_close_base(io_map_base);
 	return ERR_OK;
+}
+
+static int read_main(int argc, char* argv[]) {
+	signal(SIGINT, SIG_IGN);
+	chdir("outbox");
+	char buff[0x1000], fname[0x32];
+	FILE* pf = 0;
+	while(fgets(buff, sizeof(buff), stdin)) {
+		if(!strcmp("begin transaction;\n", buff)) {
+			printf("=======>>\n");
+			pf = fopen(".data", "w");
+			fprintf(pf, "%s", buff);
+			continue;
+		}
+		if(!strcmp("commit;\n", buff)) {
+			printf("<<=======\n");
+			fprintf(pf, "%s", buff);
+			fclose(pf);
+			sprintf(fname, "%08lx", time(0));
+			rename(".data", fname);
+			continue;
+		}
+		fprintf(pf, "%s", buff);
+	}
+	return ERR_OK;
+}
+
+int main(int argc, char* argv[]) {
+	if(argc < 2) return ERR_ARGC;
+	argc --;
+	argv ++;
+	if(!strcmp("dev", *argv)) return dev_main(argc, argv);
+	if(!strcmp("read", *argv)) return read_main(argc, argv);
+	return ERR_CMD;
 }
 

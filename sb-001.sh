@@ -29,6 +29,6 @@ do
 done &
 
 
-./sb-001 `cat key` | sqlite3 -batch $dbfile
+./sb-001 `cat key` 'data' | sqlite3 -batch $dbfile
 
 
