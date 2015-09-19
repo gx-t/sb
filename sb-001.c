@@ -20,7 +20,8 @@ enum {
 	ERR_I2COPEN,
 	ERR_I2CADDR,
 	ERR_ADCCHAN,
-	ERR_READADC
+	ERR_READADC,
+	ERR_OUTPUT
 };
 
 enum {
@@ -480,7 +481,14 @@ static void filter_sql_sd(const char* key, const char* tbl, union CMD_BUFF* data
 }
 
 static void filter_sql_fd(const char* key, const char* tbl, union CMD_BUFF* data) {
-	printf("===CMD_FLUSH: 0x%08X, 0x%08lX\n", data->fd.cmd, data->fd.time);
+	char fname[32];
+	sprintf(fname, "outbox/%08lX", data->fd.time);
+	printf("commit;\n");
+	fflush(stdout);
+	close(1);
+	rename(".data", fname);
+	dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	printf("begin transaction;\n");
 }
 
 static int filter_sql(int argc, char* argv[]) {
@@ -493,12 +501,16 @@ static int filter_sql(int argc, char* argv[]) {
 		fprintf(stderr, "Usage: ... %s <key> <table>\n", argv[0]);
 		return ERR_ARGC;
 	}
+	dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	printf("begin transaction;\n");
 	fprintf(stderr, "filter.sql   ===>>\n");
 	union CMD_BUFF data = {{0}};
 	while(0 < read(0, data.bt, sizeof(data.bt))) {
 		if(data.cmd >= CMD_LAST) continue;
 		arr[data.cmd](argv[1], argv[2], &data);
 	}
+	printf("commit;\n");
+	fflush(stdout);
 	fprintf(stderr, "filter.sql   ===<<\n");
 	return ERR_OK;
 }
