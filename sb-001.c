@@ -21,6 +21,7 @@ enum {
 	ERR_PIN,
 	ERR_VAL,
 	ERR_RESET,
+	ERR_I2COPEN,
 	ERR_I2CADDR,
 	ERR_OPENDEV,
 	ERR_NOSENSOR,
@@ -45,18 +46,25 @@ enum {
 	CMD_LAST
 };
 
-struct CMD_SDATA {
-	unsigned char cmd; //enum CMD_SDATA
-	unsigned char dev;
-	unsigned char lun;
-	time_t time;
-	float val;
-} __attribute__((packed));
-
-struct CMD_FLUSH {
+union CMD_BUFF {
+	unsigned char bt[20];
+	
 	unsigned cmd;
-	time_t time;
-} __attribute__((packed));
+	
+	struct {
+		unsigned 		cmd; //enum CMD_SDATA
+		time_t			time;
+		unsigned 		dev;
+		unsigned 		lun;
+		float			val;
+	} sd;
+
+	struct {
+		unsigned		cmd;
+		time_t			time;
+	} fd;
+};
+
 
 #define PIO_B(_b)					((AT91S_PIO*)(_b + 0x600))
 #define PMC(_b)						((AT91S_PMC*)(_b + 0xC00))
@@ -77,12 +85,7 @@ static int g_run = 1;
 
 static volatile void* io_map_base 	 = 0; 
 static volatile AT91S_PIO* io_port_b = 0;
-static volatile AT91S_TCB* tcb_base  = 0;
-
-static const char* key  = 0;
-static const char* tbl  = 0;
-static const char* name = 0;
-static const char* type = 0;
+//static volatile AT91S_TCB* tcb_base  = 0;
 
 //=============================================================================
 static void ctrl_c(int sig) {
@@ -110,6 +113,12 @@ static inline void lib_close_base(volatile void* map_base) {
 	munmap((void*)map_base, MAP_SIZE);
 }
 
+//board pin to bit shift for PIOB
+static int lib_piob_from_pin(int pin) {
+	if(pin < 3 || pin == 17 || pin == 18 || pin > 34) return -1;
+	return pin - 3;
+}
+
 // calibrated with good accuracy for GESBC-9G20u board
 static void lib_delay_us(unsigned us) {
 	volatile unsigned i = 79 * us / 2;
@@ -120,108 +129,123 @@ static void lib_delay_us(unsigned us) {
 // http://en.wikipedia.org/wiki/1-Wire
 // checked playing with read delays - got stable result for wide range
 
-static void w1_write_0() {
-	io_port_b->PIO_OER = DS18B20_MASK; //enable output
-	io_port_b->PIO_CODR = DS18B20_MASK; //level low
+static void w1_write_0(int mask) {
+	io_port_b->PIO_OER = mask; //enable output
+	io_port_b->PIO_CODR = mask; //level low
 	lib_delay_us(60);
-	io_port_b->PIO_ODR = DS18B20_MASK; //disable output
+	io_port_b->PIO_ODR = mask; //disable output
 	lib_delay_us(4);
 }
 
-static void w1_write_1() {
-	io_port_b->PIO_OER = DS18B20_MASK; //enable output
-	io_port_b->PIO_CODR = DS18B20_MASK; //level low
+static void w1_write_1(int mask) {
+	io_port_b->PIO_OER = mask; //enable output
+	io_port_b->PIO_CODR = mask; //level low
 	lib_delay_us(4);
-	io_port_b->PIO_ODR = DS18B20_MASK; //disable output
+	io_port_b->PIO_ODR = mask; //disable output
 	lib_delay_us(60);
 }
 
-static unsigned w1_read() {
-	io_port_b->PIO_OER = DS18B20_MASK; //enable output
-	io_port_b->PIO_CODR = DS18B20_MASK; //level low
+static unsigned w1_read(int mask) {
+	io_port_b->PIO_OER = mask; //enable output
+	io_port_b->PIO_CODR = mask; //level low
 	lib_delay_us(4);
-	io_port_b->PIO_ODR = DS18B20_MASK; //disable output
+	io_port_b->PIO_ODR = mask; //disable output
 	lib_delay_us(10);
-	unsigned bit_value = io_port_b->PIO_PDSR & DS18B20_MASK;
+	unsigned bit_value = io_port_b->PIO_PDSR & mask;
 	lib_delay_us(45);
 	return bit_value;
 }
 
-static unsigned w1_read_byte() {
+static unsigned w1_read_byte(int mask) {
 	unsigned result = 0;
-	if(w1_read()) result |= 0x01;
-	if(w1_read()) result |= 0x02;
-	if(w1_read()) result |= 0x04;
-	if(w1_read()) result |= 0x08;
-	if(w1_read()) result |= 0x10;
-	if(w1_read()) result |= 0x20;
-	if(w1_read()) result |= 0x40;
-	if(w1_read()) result |= 0x80;
+	if(w1_read(mask)) result |= 0x01;
+	if(w1_read(mask)) result |= 0x02;
+	if(w1_read(mask)) result |= 0x04;
+	if(w1_read(mask)) result |= 0x08;
+	if(w1_read(mask)) result |= 0x10;
+	if(w1_read(mask)) result |= 0x20;
+	if(w1_read(mask)) result |= 0x40;
+	if(w1_read(mask)) result |= 0x80;
 	return result;
 }
 
-static void w1_write_byte(unsigned data) {
-	data & 0x01 ? w1_write_1() : w1_write_0();
-	data & 0x02 ? w1_write_1() : w1_write_0();
-	data & 0x04 ? w1_write_1() : w1_write_0();
-	data & 0x08 ? w1_write_1() : w1_write_0();
-	data & 0x10 ? w1_write_1() : w1_write_0();
-	data & 0x20 ? w1_write_1() : w1_write_0();
-	data & 0x40 ? w1_write_1() : w1_write_0();
-	data & 0x80 ? w1_write_1() : w1_write_0();
+static void w1_write_byte(int mask, unsigned data) {
+	data & 0x01 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x02 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x04 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x08 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x10 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x20 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x40 ? w1_write_1(mask) : w1_write_0(mask);
+	data & 0x80 ? w1_write_1(mask) : w1_write_0(mask);
 }
 
-static unsigned ds18b20_reset() {
-	io_port_b->PIO_OER = DS18B20_MASK; //enable output
-	io_port_b->PIO_CODR = DS18B20_MASK; //level low
+static unsigned ds18b20_reset(mask) {
+	io_port_b->PIO_OER = mask; //enable output
+	io_port_b->PIO_CODR = mask; //level low
 	lib_delay_us(500);
-	io_port_b->PIO_ODR = DS18B20_MASK; //disable output
+	io_port_b->PIO_ODR = mask; //disable output
 	lib_delay_us(60);
 	int data_bit = io_port_b->PIO_PDSR;
 	usleep(1000);
-	return data_bit & DS18B20_MASK;
+	return data_bit & mask;
 }
 
 //=============================================================================
-static int ds18b20() {
-	if(fork()) return 1;
+static int dev_ds18b20(int argc, char* argv[]) {
+	//... ds18b20 <pin> <lun>
+	if(argc < 3) {
+		fprintf(stderr, "Usage: ... %s <pin> <lun>\n", argv[0]);
+		return ERR_ARGC;
+	}
 	fprintf(stderr, "ds18b20===>>\n");
-	io_port_b->PIO_PER = DS18B20_MASK;;
-	io_port_b->PIO_PPUER = DS18B20_MASK; //enable pull up
-	if(ds18b20_reset()) {
+	int pin = lib_piob_from_pin(atoi(argv[1]));
+	if(pin < 0) return ERR_PIN;
+	int mask = 1 << pin;
+	union CMD_BUFF data = {{0}};
+	data.sd.cmd = CMD_SDATA;
+	data.sd.dev = DEV_DS18B20;
+	data.sd.lun = atoi(argv[2]);
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = mask;
+	io_port_b->PIO_PPUER = mask; //enable pull up
+	if(ds18b20_reset(mask)) {
 		fprintf(stderr, "DS18B20 not detected.\n");
 		return 0;
 	}
 	float old = -99999999;
 	//start conversion
-	ds18b20_reset();
-	w1_write_byte(DS18B20_SKIP_ROM);
-	w1_write_byte(DS18B20_CONVERT_T);
+	ds18b20_reset(mask);
+	w1_write_byte(mask, DS18B20_SKIP_ROM);
+	w1_write_byte(mask, DS18B20_CONVERT_T);
 	while(g_run && !usleep(750000)) {
 		//reading
-		ds18b20_reset();
-		w1_write_byte(DS18B20_SKIP_ROM);
-		w1_write_byte(DS18B20_READ_SCRATCHPAD);
-		float temp = w1_read_byte() | (w1_read_byte() << 8);
+		ds18b20_reset(mask);
+		w1_write_byte(mask, DS18B20_SKIP_ROM);
+		w1_write_byte(mask, DS18B20_READ_SCRATCHPAD);
+		float temp = w1_read_byte(mask) | (w1_read_byte(mask) << 8);
 		//skip reading the rest of scratchpad bytes
-		io_port_b->PIO_OER = DS18B20_MASK; //enable output
-		io_port_b->PIO_CODR = DS18B20_MASK; //level low
+		io_port_b->PIO_OER = mask; //enable output
+		io_port_b->PIO_CODR = mask; //level low
 		temp /= 16;
 		if(temp != old) {
 			io_port_b->PIO_SODR = LED0_MASK;
-			struct CMD_SDATA data = {CMD_SDATA, DEV_DS18B20, 0, time(0), temp};
+			data.sd.time = time(0);
+			data.sd.val = temp;
 			write(1, &data, sizeof(data));
 			io_port_b->PIO_CODR = LED0_MASK;
 			old = temp;
 		}
-		io_port_b->PIO_ODR = DS18B20_MASK; //disable output
+		io_port_b->PIO_ODR = mask; //disable output
 
 		//start conversion
-		ds18b20_reset();
-		w1_write_byte(DS18B20_SKIP_ROM);
-		w1_write_byte(DS18B20_CONVERT_T);
+		ds18b20_reset(mask);
+		w1_write_byte(mask, DS18B20_SKIP_ROM);
+		w1_write_byte(mask, DS18B20_CONVERT_T);
 	}
 	fprintf(stderr, "ds18b20===<<\n");
+	lib_close_base(io_map_base);
 	return 0;
 }
 
@@ -251,20 +275,33 @@ static int counter_main(int argc, char* argv[]) {
 }
 #endif
 
-static int lm75() {
-	if(fork()) return 1;
+static int dev_lm75(int argc, char* argv[]) {
+	//... <i2c addr> <lun>
+	if(argc < 3) {
+		fprintf(stderr, "Usage: ... %s <i2c addr> <lun>\n", argv[0]);
+		return ERR_ARGC;
+	}
 	fprintf(stderr, "lm75   ===>>\n");
-	name = "lm75";
-	type = "temp";
 	int fd = open("/dev/i2c-0", O_RDWR);
 	if(fd < 0) {
 		perror("/dev/i2c-0");
+		return ERR_I2COPEN;
 	}
-	if(ioctl(fd, I2C_SLAVE, LM75_ADDR) < 0) {
+	int addr_i = -1;
+	sscanf(argv[1], "%i", &addr_i);
+	if(ioctl(fd, I2C_SLAVE, addr_i) < 0) {
 		perror("Failed to acquire slave address\n");
 		close(fd);
-		return 0;
+		return ERR_I2CADDR;
 	}
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = LED0_MASK;
+	io_port_b->PIO_OER = LED0_MASK;
+	union CMD_BUFF data = {{0}};
+	data.sd.cmd = CMD_SDATA;
+	data.sd.dev = DEV_LM75;
+	data.sd.lun = atoi(argv[2]);
 	float old = -9999999;
 	int res = ERR_OK;
 	while(g_run && !usleep(300000)) {
@@ -277,15 +314,21 @@ static int lm75() {
 		float temp = (float)((short)buff[0] << 8 | buff[1]) / 256;
 		if(temp == old) continue;
 		io_port_b->PIO_SODR = LED0_MASK;
-		struct CMD_SDATA data = {CMD_SDATA, DEV_LM75, 0, time(0), temp};
-		write(1, &data, sizeof(data));
+		data.sd.time = time(0);
+		data.sd.val = temp;
+		write(1, data.bt, sizeof(data.bt));
 		io_port_b->PIO_CODR = LED0_MASK;
 		old = temp;
 	}
 	close(fd);
 	fprintf(stderr, "lm75   ===<<\n");
+	lib_close_base(io_map_base);
 	return 0;
 }
+
+
+//=============================================================================
+//ADC FUNCTIONS
 
 static int adc_enable() {
 	char fname[64];
@@ -320,53 +363,63 @@ static int adc_read(float* val) {
 	return 0;
 }
 
-static int adc() {
-	if(fork()) return 1;
+static int dev_adc(int argc, char* argv[]) {
+	//... adc <channel> <period ms>
+	if(argc < 3) {
+		fprintf(stderr, "Usage: ... %s 0|1|2|3 <period ms>\n", argv[0]);
+		return ERR_ARGC;
+	}
+	//argv[1] = channel
+	//argv[2] = period
 	fprintf(stderr, "adc    ===>>\n");
-	name = "adc";
-	type = "light";
-	if(adc_enable()) {
-		return 0;
+	int period = 1000 * atoi(argv[2]);
+	if(period < 10000) period = 10000;
+	if(adc_enable(argv[1])) {
+		return ERR_ADCCHAN;
 	}
 	float old = -1;
-	while(g_run && !usleep(500000)) {
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = LED0_MASK;
+	io_port_b->PIO_OER = LED0_MASK;
+	union CMD_BUFF data = {{0}};
+	data.sd.cmd = CMD_SDATA;
+	data.sd.dev = DEV_ADC;
+	data.sd.lun = atoi(argv[1]);
+	while(g_run && !usleep(period)) {
 		float val = 0;
 		if(adc_read(&val)) {
 			break;
 		}
-		if(val == old) continue;
+		val += old;
+		val /= 2;
+		if(abs(val - old) < 1) continue;
 		io_port_b->PIO_SODR = LED0_MASK;
-		struct CMD_SDATA data = {CMD_SDATA, DEV_ADC, 0, time(0), val};
-		write(1, &data, sizeof(data));
+		data.sd.time = time(0);
+		data.sd.val = val;
+		write(1, data.bt, sizeof(data.bt));
 		io_port_b->PIO_CODR = LED0_MASK;
 		old = val;
 	}
 	fprintf(stderr, "adc    ===<<\n");
-	return 0;
+	lib_close_base(io_map_base);
+	return ERR_OK;
 }
 
-static int send_clock(int period) {
-	if(fork()) return 1;
-	if(period < 1) period = 1;
-	fprintf(stderr, "clock  ===>>\n");
-	struct CMD_FLUSH flush = {CMD_FLUSH};
-	while(g_run && !sleep(period)) {
-		io_port_b->PIO_SODR = LED1_MASK;
-		flush.time = time(0);
-		write(1, &flush, sizeof(flush));
-		io_port_b->PIO_CODR = LED1_MASK;
-	}
-	flush.time = time(0);
-	write(1, &flush, sizeof(flush));
-	fflush(stdout);
-	fprintf(stderr, "clock  ===<<\n");
-	return 0;
-}
 
 static int dev_main(int argc, char* argv[]) {
-	signal(SIGINT, ctrl_c);
-	key = argv[1];
-	tbl = argv[2];
+	//... <dev type> ...
+	if(argc < 2) {
+		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc\n", argv[0]);
+		return ERR_ARGC;
+	}
+	argc --;
+	argv ++;
+	if(!strcmp("ds18b20", *argv)) return dev_ds18b20(argc, argv);
+	if(!strcmp("lm75", *argv)) return dev_lm75(argc, argv);
+	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
+	return ERR_CMD;
+#if 0
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	tcb_base = lib_open_base((off_t)AT91C_BASE_TC0);
 	io_port_b = PIO_B(io_map_base);
@@ -377,9 +430,40 @@ static int dev_main(int argc, char* argv[]) {
 	lib_close_base(tcb_base);
 	lib_close_base(io_map_base);
 	return ERR_OK;
+#endif
 }
 
-static const char* dev_name(unsigned char dev_id) {
+//=============================================================================
+//CLOCK FUNCTIONS
+static int clock_main(int argc, char* argv[]) {
+	//... clock <period> <type>
+	if(argc < 3) {
+		fprintf(stderr, "Usage: ... %s <period sec> flush\n", argv[0]);
+		return ERR_ARGC;
+	}
+	int period = atoi(argv[1]);
+	if(period < 1) period = 1;
+	if(strcmp("flush", argv[2])) {
+		fprintf(stderr, "Invalid argument: %s. Must be: flush\n", argv[2]);
+		return ERR_CMD;
+	}
+	fprintf(stderr, "clock.flush  ===>>\n");
+	union CMD_BUFF data = {{0}};
+	data.fd.cmd = CMD_FLUSH;
+	while(g_run && !sleep(period)) {
+		data.fd.time = time(0);
+		write(1, data.bt, sizeof(data.bt));
+	}
+	data.fd.time = time(0);
+	write(1, data.bt, sizeof(data.bt));
+	fprintf(stderr, "clock.flush  ===<<\n");
+	return 0;
+}
+
+//=============================================================================
+//FILTER FUNCTIONS
+
+static const char* filter_dev_name(unsigned char dev_id) {
 	if(dev_id >= DEV_LAST) {
 		return "Unknown";
 	}
@@ -391,7 +475,7 @@ static const char* dev_name(unsigned char dev_id) {
 	return name_arr[dev_id];
 }
 
-static const char* dev_type(unsigned char dev_id) {
+static const char* filter_dev_type(unsigned char dev_id) {
 	if(dev_id >= DEV_LAST) {
 		return "Unknown";
 	}
@@ -403,65 +487,62 @@ static const char* dev_type(unsigned char dev_id) {
 	return type_arr[dev_id];
 }
 
-static void read_sdata(struct CMD_SDATA* data) {
-	time_t t0 = data->time;
+static void filter_sql_sd(const char* key, const char* tbl, union CMD_BUFF* data) {
+	time_t t0 = data->sd.time;
 	struct tm* t1 = gmtime(&t0);
 	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s-%d\', \'%g\', \'%s\', \'%s\');\n",
-		"data", t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
-		dev_name(data->dev), data->lun, data->val, "key", dev_type(data->dev));
+		tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
+		filter_dev_name(data->sd.dev), data->sd.lun, data->sd.val, key, filter_dev_type(data->sd.dev));
 }
 
-static void read_flush(struct CMD_FLUSH* data) {
-//	printf("===CMD_FLUSH: 0x%02X, 0x%08lX\n", data->cmd, data->time);
-	printf("commit;\nbegin transaction;\n");
+static void filter_sql_fd(const char* key, const char* tbl, union CMD_BUFF* data) {
+	printf("===CMD_FLUSH: 0x%08X, 0x%08lX\n", data->fd.cmd, data->fd.time);
 }
 
-static int read_main(int argc, char* argv[]) {
-	signal(SIGINT, SIG_IGN);
-	chdir("outbox");
-	char fname[0x32];
-	unsigned char data[32];
-	static void (*arr[])() ={
-		read_sdata,
-		read_flush
+static int filter_sql(int argc, char* argv[]) {
+	//... sql <key> <table name>
+	static void (*arr[])(const char*, const char*, union CMD_BUFF*) ={
+		filter_sql_sd,
+		filter_sql_fd
 	};
-	printf("begin transaction;\n");
-	while(0 < read(0, data, sizeof(data))) {
-		if(data[0] >= CMD_LAST) {
-			fprintf(stderr, "Invalid command: 0x%02X, ignoring\n", data[0]);
-			continue;
-		}
-		arr[data[0]](data);
+	if(argc != 3) {
+		fprintf(stderr, "Usage: ... %s <key> <table>\n", argv[0]);
+		return ERR_ARGC;
 	}
-	printf("commit;\n");
-#if 0
-	while(fgets(buff, sizeof(buff), stdin)) {
-		if(!strcmp("begin transaction;\n", buff)) {
-			printf("=======>>\n");
-			pf = fopen(".data", "w");
-			fprintf(pf, "%s", buff);
-			continue;
-		}
-		if(!strcmp("commit;\n", buff)) {
-			printf("<<=======\n");
-			fprintf(pf, "%s", buff);
-			fclose(pf);
-			sprintf(fname, "%08lx", time(0));
-			rename(".data", fname);
-			continue;
-		}
-		fprintf(pf, "%s", buff);
+	fprintf(stderr, "filter.sql   ===>>\n");
+	union CMD_BUFF data = {{0}};
+	while(0 < read(0, data.bt, sizeof(data.bt))) {
+		if(data.cmd >= CMD_LAST) continue;
+		arr[data.cmd](argv[1], argv[2], &data);
 	}
-#endif
+	fprintf(stderr, "filter.sql   ===<<\n");
 	return ERR_OK;
 }
 
-int main(int argc, char* argv[]) {
-	if(argc < 2) return ERR_ARGC;
+static int filter_main(int argc, char* argv[]) {
+	//... filter <type> ...
+	signal(SIGINT, SIG_IGN);
+	if(argc < 2) {
+		fprintf(stderr, "Usage: ... %s sql ...\n", argv[0]);
+		return ERR_ARGC;
+	}
 	argc --;
 	argv ++;
+	if(!strcmp("sql", *argv)) return filter_sql(argc, argv);
+	return ERR_CMD;
+}
+
+int main(int argc, char* argv[]) {
+	if(argc < 2) {
+		fprintf(stderr, "Usage: %s dev|filter|clock ...\n", argv[0]);
+		return ERR_ARGC;
+	}
+	argc --;
+	argv ++;
+	signal(SIGINT, ctrl_c);
 	if(!strcmp("dev", *argv)) return dev_main(argc, argv);
-	if(!strcmp("read", *argv)) return read_main(argc, argv);
+	if(!strcmp("filter", *argv)) return filter_main(argc, argv);
+	if(!strcmp("clock", *argv)) return clock_main(argc, argv);
 	return ERR_CMD;
 }
 
