@@ -15,17 +15,10 @@
 enum {
 	ERR_OK = 0,
 	ERR_ARGC,
-	ERR_PIPE,
 	ERR_CMD,
-	ERR_MMAP,
 	ERR_PIN,
-	ERR_VAL,
-	ERR_RESET,
 	ERR_I2COPEN,
 	ERR_I2CADDR,
-	ERR_OPENDEV,
-	ERR_NOSENSOR,
-	ERR_READI2C,
 	ERR_ADCCHAN,
 	ERR_READADC
 };
@@ -386,9 +379,11 @@ static int dev_adc(int argc, char* argv[]) {
 	data.sd.cmd = CMD_SDATA;
 	data.sd.dev = DEV_ADC;
 	data.sd.lun = atoi(argv[1]);
+	int ret = ERR_OK;
 	while(g_run && !usleep(period)) {
 		float val = 0;
 		if(adc_read(&val)) {
+			ret = ERR_READADC;
 			break;
 		}
 		val += old;
@@ -403,7 +398,7 @@ static int dev_adc(int argc, char* argv[]) {
 	}
 	fprintf(stderr, "adc    ===<<\n");
 	lib_close_base(io_map_base);
-	return ERR_OK;
+	return ret;
 }
 
 
@@ -418,6 +413,7 @@ static int dev_main(int argc, char* argv[]) {
 	if(!strcmp("ds18b20", *argv)) return dev_ds18b20(argc, argv);
 	if(!strcmp("lm75", *argv)) return dev_lm75(argc, argv);
 	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
+	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 #if 0
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
@@ -529,6 +525,7 @@ static int filter_main(int argc, char* argv[]) {
 	argc --;
 	argv ++;
 	if(!strcmp("sql", *argv)) return filter_sql(argc, argv);
+	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 }
 
@@ -543,6 +540,7 @@ int main(int argc, char* argv[]) {
 	if(!strcmp("dev", *argv)) return dev_main(argc, argv);
 	if(!strcmp("filter", *argv)) return filter_main(argc, argv);
 	if(!strcmp("clock", *argv)) return clock_main(argc, argv);
+	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 }
 
