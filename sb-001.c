@@ -415,18 +415,6 @@ static int dev_main(int argc, char* argv[]) {
 	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
 	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
-#if 0
-	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
-	tcb_base = lib_open_base((off_t)AT91C_BASE_TC0);
-	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK | LED1_MASK;
-	io_port_b->PIO_OER = LED0_MASK | LED1_MASK;
-	int res = send_clock(atoi(argv[3])) && !sleep(1) && ds18b20() && lm75() && adc();
-	while(res && -1 != wait(0));
-	lib_close_base(tcb_base);
-	lib_close_base(io_map_base);
-	return ERR_OK;
-#endif
 }
 
 //=============================================================================
