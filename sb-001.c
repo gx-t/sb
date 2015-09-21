@@ -10,6 +10,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h>
+#include <poll.h>
 #include "at91sam9g20.h"
 
 enum {
@@ -28,6 +29,7 @@ enum {
 	DEV_DS18B20,
 	DEV_LM75,
 	DEV_ADC,
+	DEV_COUNTER,
 
 	DEV_LAST
 };
@@ -117,6 +119,51 @@ static int lib_piob_from_pin(int pin) {
 static void lib_delay_us(unsigned us) {
 	volatile unsigned i = 79 * us / 2;
 	while(i --);
+}
+
+static void lib_export_gpiob(int gpiob)
+{
+	int fd = open("/sys/class/gpio/export", O_WRONLY);
+	char buff[8];
+	int len = snprintf(buff, sizeof(buff), "%d", gpiob + 64);
+	write(fd, buff, len);
+	close(fd);
+}
+
+static void lib_unexport_gpiob(int gpiob)
+{
+	int fd = open("/sys/class/gpio/unexport", O_WRONLY);
+	char buff[8];
+	int len = snprintf(buff, sizeof(buff), "%d", gpiob + 64);
+	write(fd, buff, len);
+	close(fd);
+}
+
+static void lib_setdir_gpiob(int gpiob, int dir)
+{
+	char fname[64];
+	snprintf(fname, sizeof(fname), "/sys/class/gpio/gpio%d/direction", gpiob + 64);
+	int fd = open(fname, O_WRONLY);
+	char* sdir = dir ? "out" : "in";
+	write(fd, sdir, strlen(sdir));
+	close(fd);
+}
+
+static void lib_setedge_gpiob(int gpiob)
+{
+	char fname[64];
+	snprintf(fname, sizeof(fname), "/sys/class/gpio/gpio%d/edge", gpiob + 64);
+	int fd = open(fname, O_WRONLY);
+	char* edge = "both";
+	write(fd, edge, strlen(edge));
+	close(fd);
+}
+
+static int lib_open_gpiob_read(int gpiob)
+{
+	char fname[64];
+	snprintf(fname, sizeof(fname), "/sys/class/gpio/gpio%d/value", gpiob + 64);
+	return open(fname, O_RDONLY | O_NONBLOCK);
 }
 
 // 1 wire timings from here:
@@ -402,11 +449,70 @@ static int dev_adc(int argc, char* argv[]) {
 	return ret;
 }
 
+//=============================================================================
+//COUNTER FUNCTIONS
+static int dev_counter(int argc, char* argv[]) {
+	//... counter <pin> <lun>
+	if(argc < 3) {
+		fprintf(stderr, "Usage: ... %s <pin> <lun> [period ms]\n", argv[0]);
+		return ERR_ARGC;
+	}
+	fprintf(stderr, "counter===>>\n");
+	int pin = lib_piob_from_pin(atoi(argv[1]));
+	if(pin < 0) return ERR_PIN;
+	int mask = 1 << pin;
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = LED0_MASK | mask;
+	io_port_b->PIO_OER = LED0_MASK;
+	io_port_b->PIO_ODR = mask;
+	lib_export_gpiob(pin);
+	lib_setdir_gpiob(pin, 0);
+	lib_setedge_gpiob(pin);
+	int fd = lib_open_gpiob_read(pin);
+	int period = argc > 3 ? atoi(argv[3]) : -1;
+	int count = 0;
+	int old = 0;
+	while(g_run) {
+		struct pollfd fdset = {0};
+		fdset.fd = fd;
+		fdset.events = POLLPRI;
+		int rc = poll(&fdset, 1, period);
+		if(rc < 0) {
+			break;
+		}
+		if(rc > 0 && (fdset.revents & POLLPRI)) {
+			char tmp = 0;
+			io_port_b->PIO_SODR = LED0_MASK;
+			read(fd, &tmp, 1);//to clean up queue
+			count += !!(io_port_b->PIO_PDSR & mask);
+			if(period == -1) rc = 0;
+		}
+		if(!rc && count != old) {
+			io_port_b->PIO_SODR = LED0_MASK;
+			union CMD_BUFF data = {{0}};
+			data.sd.cmd = CMD_SDATA;
+			data.sd.time = time(0);
+			data.sd.dev = DEV_COUNTER;
+			data.sd.lun = atoi(argv[2]);
+			data.sd.val = (float)count;
+			write(1, data.bt, sizeof(data.bt));
+			old = count;
+		}
+		io_port_b->PIO_CODR = LED0_MASK;
+	}
+	close(fd);
+	lib_unexport_gpiob(pin);
+	lib_close_base(io_map_base);
+	fprintf(stderr, "counter===<<\n");
+	return 0;
+}
+
 
 static int dev_main(int argc, char* argv[]) {
 	//... <dev type> ...
 	if(argc < 2) {
-		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc\n", argv[0]);
+		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc|counter\n", argv[0]);
 		return ERR_ARGC;
 	}
 	argc --;
@@ -414,6 +520,7 @@ static int dev_main(int argc, char* argv[]) {
 	if(!strcmp("ds18b20", *argv)) return dev_ds18b20(argc, argv);
 	if(!strcmp("lm75", *argv)) return dev_lm75(argc, argv);
 	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
+	if(!strcmp("counter", *argv)) return dev_counter(argc, argv);
 	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 }
@@ -455,7 +562,8 @@ static const char* filter_dev_name(unsigned char dev_id) {
 	static const char* name_arr[] = {
 		"ds18b20",
 		"lm75",
-		"adc"
+		"adc",
+		"counter"
 	};
 	return name_arr[dev_id];
 }
@@ -467,7 +575,8 @@ static const char* filter_dev_type(unsigned char dev_id) {
 	static const char* type_arr[] = {
 		"temp",
 		"temp",
-		"analog"
+		"analog",
+		"count"
 	};
 	return type_arr[dev_id];
 }
@@ -480,34 +589,38 @@ static void filter_sql_sd(const char* key, const char* tbl, union CMD_BUFF* data
 		filter_dev_name(data->sd.dev), data->sd.lun, data->sd.val, key, filter_dev_type(data->sd.dev));
 }
 
-static void filter_sql_fd(const char* key, const char* tbl, union CMD_BUFF* data) {
-	char fname[32];
-	sprintf(fname, "outbox/%08lX", data->fd.time);
+static void filter_sql_fd(const char* key, const char* tbl, union CMD_BUFF* data, const char* outdir) {
 	printf("commit;\n");
 	fflush(stdout);
-	close(1);
-	rename(".data", fname);
-	dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	if(strcmp("-", outdir)) {
+		close(1);
+		char fname[32];
+		sprintf(fname, "%s/%08lX", outdir, data->fd.time);
+		rename(".data", fname);
+		dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	}
 	printf("begin transaction;\n");
 }
 
 static int filter_sql(int argc, char* argv[]) {
 	//... sql <key> <table name>
-	static void (*arr[])(const char*, const char*, union CMD_BUFF*) ={
+	static void (*arr[])() ={
 		filter_sql_sd,
 		filter_sql_fd
 	};
-	if(argc != 3) {
-		fprintf(stderr, "Usage: ... %s <key> <table>\n", argv[0]);
+	if(argc != 4) {
+		fprintf(stderr, "Usage: ... %s <key> <table> <out dir>\n", argv[0]);
 		return ERR_ARGC;
 	}
-	dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	if(strcmp(argv[3], "-")) {
+		dup2(open(".data", O_CREAT | O_WRONLY), 1);
+	}
 	printf("begin transaction;\n");
 	fprintf(stderr, "filter.sql   ===>>\n");
 	union CMD_BUFF data = {{0}};
 	while(0 < read(0, data.bt, sizeof(data.bt))) {
 		if(data.cmd >= CMD_LAST) continue;
-		arr[data.cmd](argv[1], argv[2], &data);
+		arr[data.cmd](argv[1], argv[2], &data, argv[3]);
 	}
 	printf("commit;\n");
 	fflush(stdout);
