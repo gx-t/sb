@@ -22,7 +22,7 @@ enum {
 	ERR_I2CADDR,
 	ERR_ADCCHAN,
 	ERR_READADC,
-	ERR_OUTPUT
+	ERR_OUTDIR
 };
 
 enum {
@@ -243,10 +243,11 @@ static int dev_ds18b20(int argc, char* argv[]) {
 	int pin = lib_piob_from_pin(atoi(argv[1]));
 	if(pin < 0) return ERR_PIN;
 	int mask = 1 << pin;
-	union CMD_BUFF data = {{0}};
-	data.sd.cmd = CMD_SDATA;
-	data.sd.dev = DEV_DS18B20;
-	data.sd.lun = atoi(argv[2]);
+	union CMD_BUFF data = {
+		.sd.cmd = CMD_SDATA,
+		.sd.dev = DEV_DS18B20,
+		.sd.lun = atoi(argv[2])
+	};
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	io_port_b = PIO_B(io_map_base);
 	io_port_b->PIO_PER = mask;
@@ -339,10 +340,11 @@ static int dev_lm75(int argc, char* argv[]) {
 	io_port_b = PIO_B(io_map_base);
 	io_port_b->PIO_PER = LED0_MASK;
 	io_port_b->PIO_OER = LED0_MASK;
-	union CMD_BUFF data = {{0}};
-	data.sd.cmd = CMD_SDATA;
-	data.sd.dev = DEV_LM75;
-	data.sd.lun = atoi(argv[2]);
+	union CMD_BUFF data = {
+		.sd.cmd = CMD_SDATA,
+		.sd.dev = DEV_LM75,
+		.sd.lun = atoi(argv[2])
+	};
 	float old = -9999999;
 	int res = ERR_OK;
 	while(g_run && !usleep(300000)) {
@@ -423,10 +425,11 @@ static int dev_adc(int argc, char* argv[]) {
 	io_port_b = PIO_B(io_map_base);
 	io_port_b->PIO_PER = LED0_MASK;
 	io_port_b->PIO_OER = LED0_MASK;
-	union CMD_BUFF data = {{0}};
-	data.sd.cmd = CMD_SDATA;
-	data.sd.dev = DEV_ADC;
-	data.sd.lun = atoi(argv[1]);
+	union CMD_BUFF data = {
+		.sd.cmd = CMD_SDATA,
+		.sd.dev = DEV_ADC,
+		.sd.lun = atoi(argv[1])
+	};
 	int ret = ERR_OK;
 	while(g_run && !usleep(period)) {
 		float val = 0;
@@ -490,12 +493,13 @@ static int dev_counter(int argc, char* argv[]) {
 		}
 		if(!rc && count != old) {
 			io_port_b->PIO_SODR = LED0_MASK;
-			union CMD_BUFF data = {{0}};
-			data.sd.cmd = CMD_SDATA;
-			data.sd.time = time(0);
-			data.sd.dev = DEV_COUNTER;
-			data.sd.lun = atoi(argv[2]);
-			data.sd.val = (float)count;
+			union CMD_BUFF data = {
+				.sd.cmd = CMD_SDATA,
+				.sd.time = time(0),
+				.sd.dev = DEV_COUNTER,
+				.sd.lun = atoi(argv[2]),
+				.sd.val = (float)count
+			};
 			write(1, data.bt, sizeof(data.bt));
 			old = count;
 		}
@@ -540,8 +544,7 @@ static int clock_main(int argc, char* argv[]) {
 		return ERR_CMD;
 	}
 	fprintf(stderr, "clock.flush  ===>>\n");
-	union CMD_BUFF data = {{0}};
-	data.fd.cmd = CMD_FLUSH;
+	union CMD_BUFF data = {.fd.cmd = CMD_FLUSH};
 	while(g_run && !sleep(period)) {
 		data.fd.time = time(0);
 		write(1, data.bt, sizeof(data.bt));
@@ -613,6 +616,10 @@ static int filter_sql(int argc, char* argv[]) {
 		return ERR_ARGC;
 	}
 	if(strcmp(argv[3], "-")) {
+		if(chdir(argv[3])) {
+			perror(argv[3]);
+			return ERR_OUTDIR;
+		}
 		dup2(open(".data", O_CREAT | O_WRONLY), 1);
 	}
 	printf("begin transaction;\n");
