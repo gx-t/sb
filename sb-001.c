@@ -475,7 +475,8 @@ static int dev_counter(int argc, char* argv[]) {
 	int fd = lib_open_gpiob_read(pin);
 	int period = argc > 3 ? atoi(argv[3]) : -1;
 	int count = 0;
-	int old = 0;
+	int old = -1;
+	int old_state = 0;
 	while(g_run) {
 		struct pollfd fdset = {0};
 		fdset.fd = fd;
@@ -488,7 +489,9 @@ static int dev_counter(int argc, char* argv[]) {
 			char tmp = 0;
 			io_port_b->PIO_SODR = LED0_MASK;
 			read(fd, &tmp, 1);//to clean up queue
-			count += !!(io_port_b->PIO_PDSR & mask);
+			int state = !!(io_port_b->PIO_PDSR & mask);
+			count += (state == 1 && !old_state);
+			old_state = state;
 			if(period == -1) rc = 0;
 		}
 		if(!rc && count != old) {
