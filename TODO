@@ -1,0 +1,5 @@
+Finish Magnetometer
+Try using smbus for LM75
+Add sht... sensor support, calibrate
+Add 'version' argument
+Test speed of interrupt based counter
