@@ -30,6 +30,8 @@ enum {
 	DEV_LM75,
 	DEV_ADC,
 	DEV_COUNTER,
+	DEV_MAGNET,
+	DEV_MAGTIME,
 
 	DEV_LAST
 };
@@ -69,8 +71,7 @@ union CMD_BUFF {
 
 #define LED0_MASK					(1 << 0)
 #define LED1_MASK					(1 << 1)
-#define DS18B20_MASK				(1 << 12)
-#define LM75_ADDR					0x4F
+#define MAGNET_MASK					0xFFFF2000
 #define ADC_CHANNEL					0
 
 #define DS18B20_READ_ROM			0x33
@@ -486,9 +487,9 @@ static int dev_counter(int argc, char* argv[]) {
 			break;
 		}
 		if(rc > 0 && (fdset.revents & POLLPRI)) {
-			char tmp = 0;
+			char tmp[4];
 			io_port_b->PIO_SODR = LED0_MASK;
-			read(fd, &tmp, 1);//to clean up queue
+			read(fd, tmp, sizeof(tmp));//to clean up queue
 			int state = !!(io_port_b->PIO_PDSR & mask);
 			count += (state == 1 && !old_state);
 			old_state = state;
@@ -515,11 +516,96 @@ static int dev_counter(int argc, char* argv[]) {
 	return 0;
 }
 
+//=============================================================================
+//MAGNETOMETER FUNCTIONS
+static int dev_magnet(int argc, char* argv[]) {
+	//... counter <pin> <lun>
+	if(argc < 1) {
+		fprintf(stderr, "Usage: ... %s\n", argv[0]);
+		return ERR_ARGC;
+	}
+	fprintf(stderr, "magnet====>>\n");
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = LED0_MASK |  MAGNET_MASK;
+	io_port_b->PIO_OER = LED0_MASK;
+	io_port_b->PIO_ODR = MAGNET_MASK;
+	lib_export_gpiob(13);
+	lib_setdir_gpiob(13, 0);
+	lib_setedge_gpiob(13);
+	int fd = lib_open_gpiob_read(13);
+	int period = -1;
+	int old_strobe = 0;
+	int state = 0;
+	unsigned uinfo = 0;
+	unsigned utiming = 0;
+	while(g_run) {
+		struct pollfd fdset = {0};
+		fdset.fd = fd;
+		fdset.events = POLLPRI;
+		int rc = poll(&fdset, 1, period);
+		if(rc < 0) {
+			break;
+		}
+		if(!rc) {//timeout, reset state
+			state = 0;
+			period = -1;
+			continue;
+		}
+		if(rc > 0 && (fdset.revents & POLLPRI)) {
+			io_port_b->PIO_SODR = LED0_MASK;
+			char tmp[4];
+			read(fd, tmp, sizeof(tmp));//to clean up queue
+			int strobe = !!(io_port_b->PIO_PDSR & (1 << 13));
+			if(strobe == 1 && !old_strobe) { 
+				unsigned uval = io_port_b->PIO_PDSR & 0xFFFF0000;
+				uval >>= 16;
+				switch(state) {
+					case 0:
+						state ++;
+						period = 500;
+						uinfo = uval << 16;
+						break;
+					case 1:
+						state ++;
+						uinfo |= uval; 
+						break;
+					case 2:
+						state = 0;
+						period = -1;
+						utiming = uval;
+						fprintf(stderr, "===Magnet - Info: %u, Timing: %u\n", uinfo, utiming);
+						break;
+				}
+			}
+			old_strobe = strobe;
+		}
+		/*
+		if(!rc && count != old) {
+			io_port_b->PIO_SODR = LED0_MASK;
+			union CMD_BUFF data = {
+				.sd.cmd = CMD_SDATA,
+				.sd.time = time(0),
+				.sd.dev = DEV_COUNTER,
+				.sd.lun = atoi(argv[2]),
+				.sd.val = (float)count
+			};
+			write(1, data.bt, sizeof(data.bt));
+			old = count;
+		}*/
+		io_port_b->PIO_CODR = LED0_MASK;
+	}
+	close(fd);
+	lib_unexport_gpiob(13);
+	lib_close_base(io_map_base);
+	fprintf(stderr, "magnet====<<\n");
+	return 0;
+}
 
 static int dev_main(int argc, char* argv[]) {
 	//... <dev type> ...
 	if(argc < 2) {
-		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc|counter\n", argv[0]);
+		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc|counter|magnet\n", argv[0]);
 		return ERR_ARGC;
 	}
 	argc --;
@@ -528,6 +614,7 @@ static int dev_main(int argc, char* argv[]) {
 	if(!strcmp("lm75", *argv)) return dev_lm75(argc, argv);
 	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
 	if(!strcmp("counter", *argv)) return dev_counter(argc, argv);
+	if(!strcmp("magnet", *argv)) return dev_magnet(argc, argv);
 	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 }
@@ -569,7 +656,9 @@ static const char* filter_dev_name(unsigned char dev_id) {
 		"ds18b20",
 		"lm75",
 		"adc",
-		"counter"
+		"counter",
+		"magnetometer",
+		"magnetometer-time",
 	};
 	return name_arr[dev_id];
 }
@@ -582,7 +671,9 @@ static const char* filter_dev_type(unsigned char dev_id) {
 		"temp",
 		"temp",
 		"analog",
-		"count"
+		"count",
+		"magnet",
+		"magtime",
 	};
 	return type_arr[dev_id];
 }
