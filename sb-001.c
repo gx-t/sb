@@ -257,7 +257,7 @@ static int dev_ds18b20(int argc, char* argv[]) {
 		fprintf(stderr, "DS18B20 not detected.\n");
 		return 0;
 	}
-	float old = -99999999;
+	float old = 0;
 	//start conversion
 	ds18b20_reset(mask);
 	w1_write_byte(mask, DS18B20_SKIP_ROM);
@@ -272,7 +272,9 @@ static int dev_ds18b20(int argc, char* argv[]) {
 		io_port_b->PIO_OER = mask; //enable output
 		io_port_b->PIO_CODR = mask; //level low
 		temp /= 16;
-		if(temp != old) {
+		temp += old;
+		temp /= 2;
+		if(temp - old > 0.0675 || old - temp > 0.0675) {
 			io_port_b->PIO_SODR = LED0_MASK;
 			data.sd.time = time(0);
 			data.sd.val = temp;
@@ -346,7 +348,7 @@ static int dev_lm75(int argc, char* argv[]) {
 		.sd.dev = DEV_LM75,
 		.sd.lun = atoi(argv[2])
 	};
-	float old = -9999999;
+	float old = 0;
 	int res = ERR_OK;
 	while(g_run && !usleep(300000)) {
 		char buff[2] = {0};
@@ -356,7 +358,9 @@ static int dev_lm75(int argc, char* argv[]) {
 			break;
 		}
 		float temp = (float)((short)buff[0] << 8 | buff[1]) / 256;
-		if(temp == old) continue;
+		temp += old;
+		temp /= 2;
+		if(temp - old > 0.5 || old - temp > 0.5) continue;
 		io_port_b->PIO_SODR = LED0_MASK;
 		data.sd.time = time(0);
 		data.sd.val = temp;
@@ -678,20 +682,23 @@ static const char* filter_dev_type(unsigned char dev_id) {
 	return type_arr[dev_id];
 }
 
-static void filter_sql_sd(int* data_count, const char* key, const char* tbl, union CMD_BUFF* data) {
+static void filter_sql_sd(int* data_avail, const char* key, const char* tbl, union CMD_BUFF* data) {
 	time_t t0 = data->sd.time;
 	struct tm* t1 = gmtime(&t0);
-	if(!*data_count) {
+	if(!*data_avail) {
+		(*data_avail) ++;
 		printf("begin transaction;\n");
 	}
 	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s-%d\', \'%g\', \'%s\', \'%s\');\n",
 		tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
 		filter_dev_name(data->sd.dev), data->sd.lun, data->sd.val, key, filter_dev_type(data->sd.dev));
-	(*data_count) ++;
 }
 
-static void filter_sql_fd(int* data_count, const char* key, const char* tbl, union CMD_BUFF* data, const char* outdir) {
-	printf("commit;\n");
+static void filter_sql_fd(int* data_avail, const char* key, const char* tbl, union CMD_BUFF* data, const char* outdir) {
+	if(*data_avail) {
+		(*data_avail) = 0;
+		printf("commit;\n");
+	}
 	fflush(stdout);
 	if(strcmp("-", outdir)) {
 		close(1);
@@ -700,7 +707,6 @@ static void filter_sql_fd(int* data_count, const char* key, const char* tbl, uni
 		rename(".data", fname);
 		dup2(open(".data", O_CREAT | O_WRONLY), 1);
 	}
-	(*data_count) = 0;
 }
 
 static int filter_sql(int argc, char* argv[]) {
@@ -721,11 +727,11 @@ static int filter_sql(int argc, char* argv[]) {
 		dup2(open(".data", O_CREAT | O_WRONLY), 1);
 	}
 	fprintf(stderr, "filter.sql   ===>>\n");
-	int data_count = 0;
+	int data_avail = 0;
 	union CMD_BUFF data = {{0}};
 	while(0 < read(0, data.bt, sizeof(data.bt))) {
 		if(data.cmd >= CMD_LAST) continue;
-		arr[data.cmd](&data_count, argv[1], argv[2], &data, argv[3]);
+		arr[data.cmd](&data_avail, argv[1], argv[2], &data, argv[3]);
 	}
 	printf("commit;\n");
 	fflush(stdout);
