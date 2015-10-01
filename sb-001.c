@@ -233,6 +233,25 @@ static unsigned ds18b20_reset(mask) {
 	return data_bit & mask;
 }
 
+static int ds18b20_read_temp(float* temp, int mask) {
+	int res = 0;
+	//start conversion
+	io_port_b->PIO_ODR = mask; //disable output
+	ds18b20_reset(mask);
+	w1_write_byte(mask, DS18B20_SKIP_ROM);
+	w1_write_byte(mask, DS18B20_CONVERT_T);
+	res = usleep(750000);
+	//reading
+	ds18b20_reset(mask);
+	w1_write_byte(mask, DS18B20_SKIP_ROM);
+	w1_write_byte(mask, DS18B20_READ_SCRATCHPAD);
+	*temp = (w1_read_byte(mask) | (w1_read_byte(mask) << 8)) / 16;
+	//skip reading the rest of scratchpad bytes
+	io_port_b->PIO_OER = mask; //enable output
+	io_port_b->PIO_CODR = mask; //level low
+	return res;
+}
+
 //=============================================================================
 static int dev_ds18b20(int argc, char* argv[]) {
 	//... ds18b20 <pin> <lun>
@@ -257,37 +276,16 @@ static int dev_ds18b20(int argc, char* argv[]) {
 		fprintf(stderr, "DS18B20 not detected.\n");
 		return 0;
 	}
-	float old = 0;
-	//start conversion
-	ds18b20_reset(mask);
-	w1_write_byte(mask, DS18B20_SKIP_ROM);
-	w1_write_byte(mask, DS18B20_CONVERT_T);
-	while(g_run && !usleep(750000)) {
-		//reading
-		ds18b20_reset(mask);
-		w1_write_byte(mask, DS18B20_SKIP_ROM);
-		w1_write_byte(mask, DS18B20_READ_SCRATCHPAD);
-		float temp = w1_read_byte(mask) | (w1_read_byte(mask) << 8);
-		//skip reading the rest of scratchpad bytes
-		io_port_b->PIO_OER = mask; //enable output
-		io_port_b->PIO_CODR = mask; //level low
-		temp /= 16;
+	float old, temp;
+	for(ds18b20_read_temp(&old, mask); g_run && !ds18b20_read_temp(&temp, mask);) {
 		temp += old;
 		temp /= 2;
 		if(temp - old > 0.0675 || old - temp > 0.0675) {
-			io_port_b->PIO_SODR = LED0_MASK;
 			data.sd.time = time(0);
 			data.sd.val = temp;
 			write(1, &data, sizeof(data));
-			io_port_b->PIO_CODR = LED0_MASK;
 			old = temp;
 		}
-		io_port_b->PIO_ODR = mask; //disable output
-
-		//start conversion
-		ds18b20_reset(mask);
-		w1_write_byte(mask, DS18B20_SKIP_ROM);
-		w1_write_byte(mask, DS18B20_CONVERT_T);
 	}
 	fprintf(stderr, "ds18b20===<<\n");
 	lib_close_base(io_map_base);
@@ -339,10 +337,6 @@ static int dev_lm75(int argc, char* argv[]) {
 		close(fd);
 		return ERR_I2CADDR;
 	}
-	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
-	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK;
-	io_port_b->PIO_OER = LED0_MASK;
 	union CMD_BUFF data = {
 		.sd.cmd = CMD_SDATA,
 		.sd.dev = DEV_LM75,
@@ -361,16 +355,13 @@ static int dev_lm75(int argc, char* argv[]) {
 		temp += old;
 		temp /= 2;
 		if(temp - old > 0.5 || old - temp > 0.5) continue;
-		io_port_b->PIO_SODR = LED0_MASK;
 		data.sd.time = time(0);
 		data.sd.val = temp;
 		write(1, data.bt, sizeof(data.bt));
-		io_port_b->PIO_CODR = LED0_MASK;
 		old = temp;
 	}
 	close(fd);
 	fprintf(stderr, "lm75   ===<<\n");
-	lib_close_base(io_map_base);
 	return 0;
 }
 
@@ -425,11 +416,10 @@ static int dev_adc(int argc, char* argv[]) {
 	if(adc_enable(argv[1])) {
 		return ERR_ADCCHAN;
 	}
-	float old = -1;
-	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
-	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK;
-	io_port_b->PIO_OER = LED0_MASK;
+	float old;
+	if(adc_read(&old)) {
+		return ERR_READADC;
+	}
 	union CMD_BUFF data = {
 		.sd.cmd = CMD_SDATA,
 		.sd.dev = DEV_ADC,
@@ -445,15 +435,12 @@ static int dev_adc(int argc, char* argv[]) {
 		val += old;
 		val /= 2;
 		if(abs(val - old) < 1) continue;
-		io_port_b->PIO_SODR = LED0_MASK;
 		data.sd.time = time(0);
 		data.sd.val = val;
 		write(1, data.bt, sizeof(data.bt));
-		io_port_b->PIO_CODR = LED0_MASK;
 		old = val;
 	}
 	fprintf(stderr, "adc    ===<<\n");
-	lib_close_base(io_map_base);
 	return ret;
 }
 
@@ -471,8 +458,7 @@ static int dev_counter(int argc, char* argv[]) {
 	int mask = 1 << pin;
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK | mask;
-	io_port_b->PIO_OER = LED0_MASK;
+	io_port_b->PIO_PER = mask;
 	io_port_b->PIO_ODR = mask;
 	lib_export_gpiob(pin);
 	lib_setdir_gpiob(pin, 0);
@@ -492,7 +478,6 @@ static int dev_counter(int argc, char* argv[]) {
 		}
 		if(rc > 0 && (fdset.revents & POLLPRI)) {
 			char tmp[4];
-			io_port_b->PIO_SODR = LED0_MASK;
 			read(fd, tmp, sizeof(tmp));//to clean up queue
 			int state = !!(io_port_b->PIO_PDSR & mask);
 			count += (state == 1 && !old_state);
@@ -500,7 +485,6 @@ static int dev_counter(int argc, char* argv[]) {
 			if(period == -1) rc = 0;
 		}
 		if(!rc && count != old) {
-			io_port_b->PIO_SODR = LED0_MASK;
 			union CMD_BUFF data = {
 				.sd.cmd = CMD_SDATA,
 				.sd.time = time(0),
@@ -511,7 +495,6 @@ static int dev_counter(int argc, char* argv[]) {
 			write(1, data.bt, sizeof(data.bt));
 			old = count;
 		}
-		io_port_b->PIO_CODR = LED0_MASK;
 	}
 	close(fd);
 	lib_unexport_gpiob(pin);
@@ -531,8 +514,7 @@ static int dev_magnet(int argc, char* argv[]) {
 	fprintf(stderr, "magnet====>>\n");
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	io_port_b = PIO_B(io_map_base);
-	io_port_b->PIO_PER = LED0_MASK |  MAGNET_MASK;
-	io_port_b->PIO_OER = LED0_MASK;
+	io_port_b->PIO_PER = MAGNET_MASK;
 	io_port_b->PIO_ODR = MAGNET_MASK;
 	lib_export_gpiob(13);
 	lib_setdir_gpiob(13, 0);
@@ -557,7 +539,6 @@ static int dev_magnet(int argc, char* argv[]) {
 			continue;
 		}
 		if(rc > 0 && (fdset.revents & POLLPRI)) {
-			io_port_b->PIO_SODR = LED0_MASK;
 			char tmp[4];
 			read(fd, tmp, sizeof(tmp));//to clean up queue
 			int strobe = !!(io_port_b->PIO_PDSR & (1 << 13));
@@ -586,7 +567,6 @@ static int dev_magnet(int argc, char* argv[]) {
 		}
 		/*
 		if(!rc && count != old) {
-			io_port_b->PIO_SODR = LED0_MASK;
 			union CMD_BUFF data = {
 				.sd.cmd = CMD_SDATA,
 				.sd.time = time(0),
@@ -597,7 +577,6 @@ static int dev_magnet(int argc, char* argv[]) {
 			write(1, data.bt, sizeof(data.bt));
 			old = count;
 		}*/
-		io_port_b->PIO_CODR = LED0_MASK;
 	}
 	close(fd);
 	lib_unexport_gpiob(13);
@@ -685,27 +664,31 @@ static const char* filter_dev_type(unsigned char dev_id) {
 static void filter_sql_sd(int* data_avail, const char* key, const char* tbl, union CMD_BUFF* data) {
 	time_t t0 = data->sd.time;
 	struct tm* t1 = gmtime(&t0);
+	io_port_b->PIO_SODR = LED0_MASK;
 	if(!*data_avail) {
 		(*data_avail) ++;
 		printf("begin transaction;\n");
 	}
 	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s-%d\', \'%g\', \'%s\', \'%s\');\n",
-		tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
-		filter_dev_name(data->sd.dev), data->sd.lun, data->sd.val, key, filter_dev_type(data->sd.dev));
+			tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
+			filter_dev_name(data->sd.dev), data->sd.lun, data->sd.val, key, filter_dev_type(data->sd.dev));
+	io_port_b->PIO_CODR = LED0_MASK;
 }
 
 static void filter_sql_fd(int* data_avail, const char* key, const char* tbl, union CMD_BUFF* data, const char* outdir) {
 	if(*data_avail) {
+		io_port_b->PIO_SODR = LED1_MASK;
 		(*data_avail) = 0;
 		printf("commit;\n");
-	}
-	fflush(stdout);
-	if(strcmp("-", outdir)) {
-		close(1);
-		char fname[32];
-		sprintf(fname, "%s/%08lX", outdir, data->fd.time);
-		rename(".data", fname);
-		dup2(open(".data", O_CREAT | O_WRONLY), 1);
+		fflush(stdout);
+		if(strcmp("-", outdir)) {
+			close(1);
+			char fname[32];
+			sprintf(fname, "%s/%08lX", outdir, data->fd.time);
+			rename(".data", fname);
+			dup2(open(".data", O_CREAT | O_WRONLY), 1);
+		}
+		io_port_b->PIO_CODR = LED1_MASK;
 	}
 }
 
@@ -727,14 +710,21 @@ static int filter_sql(int argc, char* argv[]) {
 		dup2(open(".data", O_CREAT | O_WRONLY), 1);
 	}
 	fprintf(stderr, "filter.sql   ===>>\n");
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	io_port_b->PIO_PER = LED0_MASK | LED1_MASK;
+	io_port_b->PIO_OER = LED0_MASK | LED1_MASK;
 	int data_avail = 0;
 	union CMD_BUFF data = {{0}};
 	while(0 < read(0, data.bt, sizeof(data.bt))) {
 		if(data.cmd >= CMD_LAST) continue;
+		io_port_b->PIO_SODR = LED0_MASK;
 		arr[data.cmd](&data_avail, argv[1], argv[2], &data, argv[3]);
+		io_port_b->PIO_CODR = LED0_MASK;
 	}
 	printf("commit;\n");
 	fflush(stdout);
+	lib_close_base(io_map_base);
 	fprintf(stderr, "filter.sql   ===<<\n");
 	return ERR_OK;
 }
