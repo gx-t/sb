@@ -3,7 +3,4 @@ Try using smbus for LM75
 Add sht... sensor support, calibrate
 Add 'version' argument
 Test speed of interrupt based counter
-<<<<<<< HEAD
 Always send first measurement result
-=======
->>>>>>> b2ada723ad474876a2be0583565d4d8129369f5a
