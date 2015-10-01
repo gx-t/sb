@@ -21,9 +21,10 @@ ff() {
 	./sb-001 dev lm75 0x4F 0 &
 	./sb-001 dev adc 0 0 &
 	./sb-001 dev counter 9 0 &
+	./sb-001 dev sht1x 7 8 0 &
 }
 
-ff | ./sb-001 filter sql `cat key` data outbox
+ff | ./sb-001 filter sql `cat key` data -
 
 #data() {
 #		echo -e ".timeout 1000\n.mode insert data\nselect * from data;" |

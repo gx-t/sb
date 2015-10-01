@@ -32,6 +32,8 @@ enum {
 	DEV_COUNTER,
 	DEV_MAGNET,
 	DEV_MAGTIME,
+	DEV_SHT1XTEMP,
+	DEV_SHT1XHUM,
 
 	DEV_LAST
 };
@@ -255,7 +257,7 @@ static int ds18b20_read_temp(float* temp, int mask) {
 //=============================================================================
 static int dev_ds18b20(int argc, char* argv[]) {
 	//... ds18b20 <pin> <lun>
-	if(argc < 3) {
+	if(argc != 3) {
 		fprintf(stderr, "Usage: ... %s <pin> <lun>\n", argv[0]);
 		return ERR_ARGC;
 	}
@@ -277,7 +279,8 @@ static int dev_ds18b20(int argc, char* argv[]) {
 		return 0;
 	}
 	float old, temp;
-	for(ds18b20_read_temp(&old, mask); g_run && !ds18b20_read_temp(&temp, mask);) {
+	ds18b20_read_temp(&old, mask);
+	while(g_run && !ds18b20_read_temp(&temp, mask)) {
 		temp += old;
 		temp /= 2;
 		if(temp - old > 0.0675 || old - temp > 0.0675) {
@@ -585,10 +588,158 @@ static int dev_magnet(int argc, char* argv[]) {
 	return 0;
 }
 
+//=============================================================================
+//SHT1X FUNCTIONS
+static void sht1x_shift_in(int clk_mask) {
+	io_port_b->PIO_SODR = clk_mask; //clock up
+	lib_delay_us(10);
+	io_port_b->PIO_CODR = clk_mask; //clock down
+}
+
+static int sht1x_shift_out(int clk_mask, int data_mask) {
+	io_port_b->PIO_SODR = clk_mask;
+	int bit = io_port_b->PIO_PDSR & data_mask;
+	io_port_b->PIO_CODR = clk_mask;
+	lib_delay_us(10);
+	return !!bit;
+}
+
+static int sht1x_read_byte(int clk_mask, int data_mask) {
+	io_port_b->PIO_ODR = data_mask; //data is input
+	int data = sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	data <<= 1;
+	data |= sht1x_shift_out(clk_mask, data_mask);
+	return data;
+}
+
+static void sht1x_send_ack(int clk_mask, int data_mask) {
+	io_port_b->PIO_OER = data_mask; //data output
+	io_port_b->PIO_CODR = data_mask; //data down
+	io_port_b->PIO_SODR = clk_mask; //clock up
+	lib_delay_us(10);
+	io_port_b->PIO_CODR = clk_mask; //clock down
+	lib_delay_us(10);
+}
+
+static void sht1x_skip_ack(int clk_mask, int data_mask) {
+	io_port_b->PIO_OER = data_mask; //data output
+	io_port_b->PIO_SODR = data_mask; //data up
+	io_port_b->PIO_SODR = clk_mask; //clock up
+	lib_delay_us(10);
+	io_port_b->PIO_CODR = clk_mask; //clock down
+	lib_delay_us(10);
+}
+
+
+static void sht1x_init(int clk_mask, int data_mask) {
+	//init ports
+	io_port_b->PIO_PER = clk_mask | data_mask; //enable clock and data
+	io_port_b->PIO_OER = clk_mask; //clock always output
+	io_port_b->PIO_CODR = clk_mask; //clock down
+	io_port_b->PIO_OER = data_mask; //data initially output
+	io_port_b->PIO_PPUER = data_mask; //pullup on data
+
+	//init sensor
+	io_port_b->PIO_SODR = data_mask; //data up
+	io_port_b->PIO_SODR = clk_mask; //clock up
+	io_port_b->PIO_CODR = data_mask; //data down
+	io_port_b->PIO_CODR = clk_mask; //clock down
+	lib_delay_us(10);
+	io_port_b->PIO_SODR = clk_mask; //clock up
+	io_port_b->PIO_SODR = data_mask; //data up
+	io_port_b->PIO_CODR = clk_mask; //clock down
+	lib_delay_us(10);
+}
+
+static int sht1x_read_temp(float* temp, int clk_mask, int data_mask) {
+	int res = 0;
+	sht1x_init(clk_mask, data_mask);
+	//address 000
+	io_port_b->PIO_CODR = data_mask; //data down
+	sht1x_shift_in(clk_mask);
+	sht1x_shift_in(clk_mask);
+	sht1x_shift_in(clk_mask);
+
+	//command 00011
+	sht1x_shift_in(clk_mask);
+	sht1x_shift_in(clk_mask);
+	sht1x_shift_in(clk_mask);
+	io_port_b->PIO_SODR = data_mask; //data up
+	sht1x_shift_in(clk_mask);
+	sht1x_shift_in(clk_mask);
+
+	//read ACK
+	io_port_b->PIO_ODR = data_mask; //data is input
+	sht1x_shift_out(clk_mask, data_mask);
+
+	res = usleep(500000);
+	//read 1st byte
+	int data = sht1x_read_byte(clk_mask, data_mask);
+	sht1x_send_ack(clk_mask, data_mask);
+	//read 2nd byte
+	data <<= 8;
+	data |= sht1x_read_byte(clk_mask, data_mask);
+
+	//don't send to stop sending CRC
+	sht1x_skip_ack(clk_mask, data_mask);
+
+	*temp = (float)data;
+	(*temp) *= 0.01;
+	(*temp) -= 39.7;
+	return res;
+}
+
+static int dev_sht1x(int argc, char* argv[]) {
+	if(argc != 4) {
+		fprintf(stderr, "Usage: ... %s <clock pin> <data pin> <lun>\n", argv[0]);
+		return ERR_ARGC;
+	}
+	fprintf(stderr, "sht1x=====>>\n");
+	int clk_pin = lib_piob_from_pin(atoi(argv[1]));
+	int data_pin = lib_piob_from_pin(atoi(argv[2]));
+	if(clk_pin < 0 || data_pin < 0 || clk_pin == data_pin) return ERR_PIN;
+	int clk_mask = 1 << clk_pin;
+	int data_mask = 1 << data_pin;
+	union CMD_BUFF data = {
+		.sd.cmd = CMD_SDATA,
+		.sd.dev = DEV_SHT1XTEMP,
+		.sd.lun = atoi(argv[3])
+	};
+	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
+	io_port_b = PIO_B(io_map_base);
+	float old, temp;
+	sht1x_read_temp(&old, clk_mask, data_mask);
+	while(g_run && !sht1x_read_temp(&temp, clk_mask, data_mask)) {
+		temp += old;
+		temp /= 2;
+		if(temp - old > 0.1 || old - temp > 0.1) {
+			data.sd.time = time(0),
+				data.sd.val = temp;
+			write(1, data.bt, sizeof(data.bt));
+		};
+		old = temp;
+	}
+	fprintf(stderr, "sht1x=====<<\n");
+	lib_close_base(io_map_base);
+	return ERR_OK;
+}
+
 static int dev_main(int argc, char* argv[]) {
 	//... <dev type> ...
 	if(argc < 2) {
-		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc|counter|magnet\n", argv[0]);
+		fprintf(stderr, "Usage: ... %s ds18b20|lm75|adc|counter|magnet|sht1x\n", argv[0]);
 		return ERR_ARGC;
 	}
 	argc --;
@@ -598,6 +749,7 @@ static int dev_main(int argc, char* argv[]) {
 	if(!strcmp("adc", *argv)) return dev_adc(argc, argv);
 	if(!strcmp("counter", *argv)) return dev_counter(argc, argv);
 	if(!strcmp("magnet", *argv)) return dev_magnet(argc, argv);
+	if(!strcmp("sht1x", *argv)) return dev_sht1x(argc, argv);
 	fprintf(stderr, "Unknown subcommand: %s\n", *argv);
 	return ERR_CMD;
 }
@@ -642,6 +794,8 @@ static const char* filter_dev_name(unsigned char dev_id) {
 		"counter",
 		"magnetometer",
 		"magnetometer-time",
+		"sht1x-temp",
+		"sht1x-humidity"
 	};
 	return name_arr[dev_id];
 }
@@ -657,6 +811,8 @@ static const char* filter_dev_type(unsigned char dev_id) {
 		"count",
 		"magnet",
 		"magtime",
+		"temp",
+		"humidity"
 	};
 	return type_arr[dev_id];
 }
