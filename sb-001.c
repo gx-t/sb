@@ -596,32 +596,26 @@ static void sht1x_shift_in(int clk_mask) {
 	io_port_b->PIO_CODR = clk_mask; //clock down
 }
 
-static int sht1x_shift_out(int clk_mask, int data_mask) {
+static void sht1x_shift_out(int clk_mask, int data_mask, int* data) {
 	io_port_b->PIO_SODR = clk_mask;
 	int bit = io_port_b->PIO_PDSR & data_mask;
 	io_port_b->PIO_CODR = clk_mask;
 	lib_delay_us(10);
-	return !!bit;
+	if(!data) return;
+	(*data) <<= 1;
+	(*data) |= !!bit;
 }
 
-static int sht1x_read_byte(int clk_mask, int data_mask) {
+static void sht1x_read_byte(int clk_mask, int data_mask, int* data) {
 	io_port_b->PIO_ODR = data_mask; //data is input
-	int data = sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	data <<= 1;
-	data |= sht1x_shift_out(clk_mask, data_mask);
-	return data;
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
+	sht1x_shift_out(clk_mask, data_mask, data);
 }
 
 static void sht1x_send_ack(int clk_mask, int data_mask) {
@@ -682,15 +676,15 @@ static int sht1x_read_temp(float* temp, int clk_mask, int data_mask) {
 
 	//read ACK
 	io_port_b->PIO_ODR = data_mask; //data is input
-	sht1x_shift_out(clk_mask, data_mask);
+	sht1x_shift_out(clk_mask, data_mask, 0);
 
 	res = usleep(500000);
+	int data = 0;
 	//read 1st byte
-	int data = sht1x_read_byte(clk_mask, data_mask);
+	sht1x_read_byte(clk_mask, data_mask, &data);
 	sht1x_send_ack(clk_mask, data_mask);
 	//read 2nd byte
-	data <<= 8;
-	data |= sht1x_read_byte(clk_mask, data_mask);
+	sht1x_read_byte(clk_mask, data_mask, &data);
 
 	//don't send to stop sending CRC
 	sht1x_skip_ack(clk_mask, data_mask);
