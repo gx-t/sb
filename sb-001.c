@@ -247,7 +247,8 @@ static int ds18b20_read_temp(float* temp, int mask) {
 	ds18b20_reset(mask);
 	w1_write_byte(mask, DS18B20_SKIP_ROM);
 	w1_write_byte(mask, DS18B20_READ_SCRATCHPAD);
-	*temp = (w1_read_byte(mask) | (w1_read_byte(mask) << 8)) / 16;
+	*temp = (w1_read_byte(mask) | (w1_read_byte(mask) << 8));
+	(*temp) /= 16;
 	//skip reading the rest of scratchpad bytes
 	io_port_b->PIO_OER = mask; //enable output
 	io_port_b->PIO_CODR = mask; //level low
@@ -278,11 +279,8 @@ static int dev_ds18b20(int argc, char* argv[]) {
 		fprintf(stderr, "DS18B20 not detected.\n");
 		return 0;
 	}
-	float old, temp;
-	ds18b20_read_temp(&old, mask);
+	float old = -999, temp;
 	while(g_run && !ds18b20_read_temp(&temp, mask)) {
-		temp += old;
-		temp /= 2;
 		if(temp - old > 0.0675 || old - temp > 0.0675) {
 			data.sd.time = time(0);
 			data.sd.val = temp;
@@ -345,7 +343,7 @@ static int dev_lm75(int argc, char* argv[]) {
 		.sd.dev = DEV_LM75,
 		.sd.lun = atoi(argv[2])
 	};
-	float old = 0;
+	float old = -999;
 	int res = ERR_OK;
 	while(g_run && !usleep(300000)) {
 		char buff[2] = {0};
@@ -355,8 +353,6 @@ static int dev_lm75(int argc, char* argv[]) {
 			break;
 		}
 		float temp = (float)((short)buff[0] << 8 | buff[1]) / 256;
-		temp += old;
-		temp /= 2;
 		if(temp - old > 0.5 || old - temp > 0.5) continue;
 		data.sd.time = time(0);
 		data.sd.val = temp;
@@ -592,21 +588,20 @@ static int dev_magnet(int argc, char* argv[]) {
 //SHT1X FUNCTIONS
 static void sht1x_shift_in(int clk_mask) {
 	io_port_b->PIO_SODR = clk_mask; //clock up
-	lib_delay_us(10);
 	io_port_b->PIO_CODR = clk_mask; //clock down
 }
 
 static void sht1x_shift_out(int clk_mask, int data_mask, int* data) {
 	io_port_b->PIO_SODR = clk_mask;
+	lib_delay_us(10);//pull-up moves input slowly, needs delay
 	int bit = io_port_b->PIO_PDSR & data_mask;
 	io_port_b->PIO_CODR = clk_mask;
-	lib_delay_us(10);
 	if(!data) return;
 	(*data) <<= 1;
 	(*data) |= !!bit;
 }
 
-static void sht1x_read_byte(int clk_mask, int data_mask, int* data) {
+static void sht1x_read_byte(int clk_mask, int data_mask, int* data, int skip_ack) {
 	io_port_b->PIO_ODR = data_mask; //data is input
 	sht1x_shift_out(clk_mask, data_mask, data);
 	sht1x_shift_out(clk_mask, data_mask, data);
@@ -616,26 +611,16 @@ static void sht1x_read_byte(int clk_mask, int data_mask, int* data) {
 	sht1x_shift_out(clk_mask, data_mask, data);
 	sht1x_shift_out(clk_mask, data_mask, data);
 	sht1x_shift_out(clk_mask, data_mask, data);
-}
-
-static void sht1x_send_ack(int clk_mask, int data_mask) {
 	io_port_b->PIO_OER = data_mask; //data output
-	io_port_b->PIO_CODR = data_mask; //data down
+	if(skip_ack) {
+		io_port_b->PIO_SODR = data_mask; //data up
+	}
+	else {
+		io_port_b->PIO_CODR = data_mask; //data down
+	}
 	io_port_b->PIO_SODR = clk_mask; //clock up
-	lib_delay_us(10);
 	io_port_b->PIO_CODR = clk_mask; //clock down
-	lib_delay_us(10);
 }
-
-static void sht1x_skip_ack(int clk_mask, int data_mask) {
-	io_port_b->PIO_OER = data_mask; //data output
-	io_port_b->PIO_SODR = data_mask; //data up
-	io_port_b->PIO_SODR = clk_mask; //clock up
-	lib_delay_us(10);
-	io_port_b->PIO_CODR = clk_mask; //clock down
-	lib_delay_us(10);
-}
-
 
 static void sht1x_init(int clk_mask, int data_mask) {
 	//init ports
@@ -650,14 +635,12 @@ static void sht1x_init(int clk_mask, int data_mask) {
 	io_port_b->PIO_SODR = clk_mask; //clock up
 	io_port_b->PIO_CODR = data_mask; //data down
 	io_port_b->PIO_CODR = clk_mask; //clock down
-	lib_delay_us(10);
 	io_port_b->PIO_SODR = clk_mask; //clock up
 	io_port_b->PIO_SODR = data_mask; //data up
 	io_port_b->PIO_CODR = clk_mask; //clock down
-	lib_delay_us(10);
 }
 
-static int sht1x_read_temp(float* temp, int clk_mask, int data_mask) {
+static int sht1x_read_sensor(float* val, int clk_mask, int data_mask, int temp) {
 	int res = 0;
 	sht1x_init(clk_mask, data_mask);
 	//address 000
@@ -669,10 +652,20 @@ static int sht1x_read_temp(float* temp, int clk_mask, int data_mask) {
 	//command 00011
 	sht1x_shift_in(clk_mask);
 	sht1x_shift_in(clk_mask);
-	sht1x_shift_in(clk_mask);
-	io_port_b->PIO_SODR = data_mask; //data up
-	sht1x_shift_in(clk_mask);
-	sht1x_shift_in(clk_mask);
+	if(temp) {
+		sht1x_shift_in(clk_mask);
+		io_port_b->PIO_SODR = data_mask; //data up
+		sht1x_shift_in(clk_mask);
+		sht1x_shift_in(clk_mask);
+	}
+	else {
+		io_port_b->PIO_SODR = data_mask; //data up
+		sht1x_shift_in(clk_mask);
+		io_port_b->PIO_CODR = data_mask; //data down
+		sht1x_shift_in(clk_mask);
+		io_port_b->PIO_SODR = data_mask; //data up
+		sht1x_shift_in(clk_mask);
+	}
 
 	//read ACK
 	io_port_b->PIO_ODR = data_mask; //data is input
@@ -681,19 +674,14 @@ static int sht1x_read_temp(float* temp, int clk_mask, int data_mask) {
 	res = usleep(500000);
 	int data = 0;
 	//read 1st byte
-	sht1x_read_byte(clk_mask, data_mask, &data);
-	sht1x_send_ack(clk_mask, data_mask);
+	sht1x_read_byte(clk_mask, data_mask, &data, 0);
 	//read 2nd byte
-	sht1x_read_byte(clk_mask, data_mask, &data);
+	sht1x_read_byte(clk_mask, data_mask, &data, 1);
 
-	//don't send to stop sending CRC
-	sht1x_skip_ack(clk_mask, data_mask);
-
-	*temp = (float)data;
-	(*temp) *= 0.01;
-	(*temp) -= 39.7;
+	*val = (float)data;
 	return res;
 }
+
 
 static int dev_sht1x(int argc, char* argv[]) {
 	if(argc != 4) {
@@ -713,17 +701,27 @@ static int dev_sht1x(int argc, char* argv[]) {
 	};
 	io_map_base = lib_open_base((off_t)AT91C_BASE_AIC);
 	io_port_b = PIO_B(io_map_base);
-	float old, temp;
-	sht1x_read_temp(&old, clk_mask, data_mask);
-	while(g_run && !sht1x_read_temp(&temp, clk_mask, data_mask)) {
-		temp += old;
-		temp /= 2;
-		if(temp - old > 0.1 || old - temp > 0.1) {
-			data.sd.time = time(0),
-				data.sd.val = temp;
+	float old_temp = -999, temp, old_hum = -999, hum;
+	while(g_run
+			&& !sht1x_read_sensor(&temp, clk_mask, data_mask, 1)
+			&& g_run
+			&& !sht1x_read_sensor(&hum, clk_mask, data_mask, 0)) {
+		temp *= 0.01;
+		temp -= 39.7;
+		hum = (temp - 25.0) * (0.01 + 0.00008 * hum) + 0.0367 * hum - 1.5955e-6 * hum - 2.0468;
+		data.sd.time = time(0);
+		if(temp - old_temp > 0.5 || old_temp - temp > 0.5) {
+			data.sd.dev = DEV_SHT1XTEMP;
+			data.sd.val = temp;
 			write(1, data.bt, sizeof(data.bt));
-		};
-		old = temp;
+			old_temp = temp;
+		}
+		if(hum - old_hum > 4.5 || old_hum - hum > 4.5) {
+			data.sd.dev = DEV_SHT1XHUM;
+			data.sd.val = hum;
+			write(1, data.bt, sizeof(data.bt));
+			old_hum = hum;
+		}
 	}
 	fprintf(stderr, "sht1x=====<<\n");
 	lib_close_base(io_map_base);
