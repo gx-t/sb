@@ -292,32 +292,6 @@ static int dev_ds18b20(int argc, char* argv[]) {
 	return 0;
 }
 
-//=============================================================================
-#if 0
-static int counter_main(int argc, char* argv[]) {
-	if(argc != 2) {
-		fprintf(stderr, "Usage: ... %s name\n", argv[0]);
-		return ERR_CMD;
-	}
-	PMC(io_base)->PMC_PCER = (1 << AT91C_ID_TC0); //start periferial clock
-	volatile AT91S_TCB* tcb_base = lib_open_base((off_t)AT91C_BASE_TC0);
-	if(!tcb_base) {
-		return ERR_MMAP;
-	}
-	tcb_base->TCB_TC0.TC_IDR = 0xFF;//disable all interrupts for TC0
-	tcb_base->TCB_TC0.TC_CMR = AT91C_TC_CLKS_XC1 | AT91C_TC_ETRGEDG_RISING; //XC1 as clock, rising edge
-	tcb_base->TCB_BMR = AT91C_TCB_TC1XC1S_TCLK1; //connect XC1 to TCLK1 (pin 9)
-	tcb_base->TCB_TC0.TC_CCR = AT91C_TC_CLKEN | AT91C_TC_SWTRG; //enable clock, reset counter
-	fprintf(stderr, "%s -- %s ====>\n", argv[0], argv[1]);
-	float old = -9999999;
-	while(g_run && !sleep(1)) {
-		lib_check_print_float(argv[1], (float)tcb_base->TCB_TC0.TC_CV, &old, "counter");
-	}
-	lib_close_base(tcb_base);
-	return ERR_OK;
-}
-#endif
-
 static int dev_lm75(int argc, char* argv[]) {
 	//... <i2c addr> <lun>
 	if(argc < 3) {
@@ -367,9 +341,9 @@ static int dev_lm75(int argc, char* argv[]) {
 //=============================================================================
 //ADC FUNCTIONS
 
-static int adc_enable() {
+static int adc_enable(char* chan) {
 	char fname[64];
-	sprintf(fname, "/sys/class/misc/adc/ch%d_enable", ADC_CHANNEL);
+	sprintf(fname, "/sys/class/misc/adc/ch%s_enable", chan);
 	int fd = open(fname, O_WRONLY);
 	if(fd == -1) {
 		perror(fname);
@@ -381,9 +355,9 @@ static int adc_enable() {
 	return 1 == ret ? 0 : -1;
 }
 
-static int adc_read(float* val) {
+static int adc_read(float* val, char* chan) {
 	char fname[64];
-	sprintf(fname, "/sys/class/misc/adc/ch%d_value", ADC_CHANNEL);
+	sprintf(fname, "/sys/class/misc/adc/ch%s_value", chan);
 	int fd = open(fname, O_RDONLY);
 	if(fd == -1) {
 		perror(fname);
@@ -415,7 +389,7 @@ static int dev_adc(int argc, char* argv[]) {
 		return ERR_ADCCHAN;
 	}
 	float old;
-	if(adc_read(&old)) {
+	if(adc_read(&old, argv[1])) {
 		return ERR_READADC;
 	}
 	union CMD_BUFF data = {
@@ -426,7 +400,7 @@ static int dev_adc(int argc, char* argv[]) {
 	int ret = ERR_OK;
 	while(g_run && !usleep(period)) {
 		float val = 0;
-		if(adc_read(&val)) {
+		if(adc_read(&val, argv[1])) {
 			ret = ERR_READADC;
 			break;
 		}
