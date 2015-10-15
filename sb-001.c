@@ -11,6 +11,7 @@
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h>
 #include <poll.h>
+#include <math.h>
 
 enum {
 	ERR_OK = 0,
@@ -677,8 +678,8 @@ static int dev_sht1x(int argc, char* argv[]) {
 			&& g_run
 			&& !sht1x_read_sensor(&hum, clk_mask, data_mask, 0)) {
 		temp *= 0.01;
-		temp -= 39.7;
-		hum = (temp - 25.0) * (0.01 + 0.00008 * hum) + 0.0367 * hum - 1.5955e-6 * hum - 2.0468;
+		temp -= 40.1;
+		hum = (temp - 25.0) * (0.01 + 0.00008 * hum) + 0.0367 * hum - 1.5955e-6 * hum * hum - 2.0468;
 		data.sd.time = time(0);
 		if(temp - old_temp > 0.5 || old_temp - temp > 0.5) {
 			data.sd.dev = DEV_SHT1XTEMP;
@@ -686,7 +687,7 @@ static int dev_sht1x(int argc, char* argv[]) {
 			write(1, data.bt, sizeof(data.bt));
 			old_temp = temp;
 		}
-		if(hum - old_hum > 4.5 || old_hum - hum > 4.5) {
+		if(hum - old_hum > 1 || old_hum - hum > 1) {
 			data.sd.dev = DEV_SHT1XHUM;
 			data.sd.val = hum;
 			write(1, data.bt, sizeof(data.bt));
@@ -760,7 +761,7 @@ static const char* filter_dev_name(unsigned char dev_id) {
 		"magnetometer",
 		"magnetometer-time",
 		"sht1x-temp",
-		"sht1x-humidity"
+		"sht1x-humidity",
 	};
 	return name_arr[dev_id];
 }
@@ -777,7 +778,7 @@ static const char* filter_dev_type(unsigned char dev_id) {
 		"magnet",
 		"magtime",
 		"temp",
-		"humidity"
+		"humidity",
 	};
 	return type_arr[dev_id];
 }
