@@ -335,7 +335,7 @@ static int dev_lm75(int argc, char* argv[]) {
 	}
 	close(fd);
 	fprintf(stderr, "lm75   ===<<\n");
-	return 0;
+	return res;
 }
 
 
