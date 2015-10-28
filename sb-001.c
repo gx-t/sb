@@ -789,7 +789,6 @@ static void filter_sql_sd(int* data_avail, const char* key, const char* tbl, uni
 	PIOB_SODR = LED0_MASK;
 	if(!*data_avail) {
 		(*data_avail) ++;
-		printf("begin transaction;\n");
 	}
 	printf("insert into %s values(\'%04d-%02d-%02d %02d:%02d:%02d\', \'%s-%d\', \'%g\', \'%s\', \'%s\');\n",
 			tbl, t1->tm_year + 1900, t1->tm_mon, t1->tm_mday, t1->tm_hour, t1->tm_min, t1->tm_sec,
@@ -802,6 +801,7 @@ static void filter_sql_fd(int* data_avail, const char* key, const char* tbl, uni
 		PIOB_SODR = LED1_MASK;
 		(*data_avail) = 0;
 		printf("commit;\n");
+		printf("begin transaction;\n");
 		fflush(stdout);
 		if(strcmp("-", outdir)) {
 			close(1);
