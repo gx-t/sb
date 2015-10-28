@@ -800,8 +800,6 @@ static void filter_sql_fd(int* data_avail, const char* key, const char* tbl, uni
 	if(*data_avail) {
 		PIOB_SODR = LED1_MASK;
 		(*data_avail) = 0;
-		printf("commit;\n");
-		printf("begin transaction;\n");
 		fflush(stdout);
 		if(strcmp("-", outdir)) {
 			close(1);
@@ -843,7 +841,6 @@ static int filter_sql(int argc, char* argv[]) {
 		arr[data.cmd](&data_avail, argv[1], argv[2], &data, argv[3]);
 		PIOB_CODR = LED0_MASK;
 	}
-	printf("commit;\n");
 	fflush(stdout);
 	lib_close_base(io_base);
 	fprintf(stderr, "filter.sql   ===<<\n");
