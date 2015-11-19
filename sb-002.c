@@ -20,19 +20,23 @@ static volatile unsigned char* reg_base = 0;
 #define REG_BASE					0x10000000
 #define MAP_SIZE					4096UL
 
-#define PIOB_PDSR					(*(volatile unsigned*)&reg_base[0x620])
-#define PIOB_OER					(*(volatile unsigned*)&reg_base[0x624])
-#define PIOB_PPR					(*(volatile unsigned*)&reg_base[0x628])
-#define PIOB_SODR					(*(volatile unsigned*)&reg_base[0x62C])
-#define PIOB_CODR					(*(volatile unsigned*)&reg_base[0x630])
-#define PIOB_TODR					(*(volatile unsigned*)&reg_base[0x634])
+#define GPIOMODE					(*(volatile unsigned*)&reg_base[0x060])
+#define JTAG_GPIO_MODE				(1 << 6)
 
-#define PIOA_PDSR					(*(volatile unsigned*)&reg_base[0x670])
-#define PIOA_OER					(*(volatile unsigned*)&reg_base[0x674])
-#define PIOA_PPR					(*(volatile unsigned*)&reg_base[0x678])
-#define PIOA_SODR					(*(volatile unsigned*)&reg_base[0x67C])
-#define PIOA_CODR					(*(volatile unsigned*)&reg_base[0x680])
-#define PIOA_TODR					(*(volatile unsigned*)&reg_base[0x684])
+#define GPIO21_00_DATA				(*(volatile unsigned*)&reg_base[0x620])
+#define GPIO21_00_DIR				(*(volatile unsigned*)&reg_base[0x624])
+#define GPIO21_00_POL				(*(volatile unsigned*)&reg_base[0x628])
+#define GPIO21_00_SET				(*(volatile unsigned*)&reg_base[0x62C])
+#define GPIO21_00_RESET				(*(volatile unsigned*)&reg_base[0x630])
+#define GPIO21_00_TOG				(*(volatile unsigned*)&reg_base[0x634])
+
+
+#define GPIO27_22_DATA				(*(volatile unsigned*)&reg_base[0x670])
+#define GPIO27_22_DIR				(*(volatile unsigned*)&reg_base[0x674])
+#define GPIO27_22_POL				(*(volatile unsigned*)&reg_base[0x678])
+#define GPIO27_22_SET				(*(volatile unsigned*)&reg_base[0x67C])
+#define GPIO27_22_RESET				(*(volatile unsigned*)&reg_base[0x680])
+#define GPIO27_22_TOG				(*(volatile unsigned*)&reg_base[0x684])
 
 static int g_run = 1;
 
@@ -55,6 +59,7 @@ static void lib_open_reg_base() {
 		perror("mmap");
 		reg_base = 0;
 	}
+	GPIOMODE |= JTAG_GPIO_MODE;
 }
 
 static inline void lib_close_reg_base() {
@@ -112,9 +117,9 @@ static int dev_sht1x(int argc, char* argv[]) {
 			old_hum = hum;
 		}
 	}
-	PIOB_CODR = data_mask; //data down
+	GPIO21_00_RESET = data_mask; //data down
 	PIOB_ODR = data_mask; //data is input
-	PIOB_CODR = clk_mask; //clock down
+	GPIO21_00_RESET = clk_mask; //clock down
 	fprintf(stderr, "sht1x=====<<\n");
 #endif
 	lib_close_reg_base();
@@ -176,27 +181,28 @@ int main(int argc, char* argv[]) {
 //	IOREG(0x628) = 0; //All GPIOs polarity - normal
 //	while((IOREG(0x62c) |= (1 << 0), !usleep(100000)) && (IOREG(0x630) |= (1 << 0), !usleep(100000)));
 //	IOREG(0x630) |= (1 << 0); //GPIO26 - low
-	PIOB_OER |= (1 << 0); //GPIO22 - output
-	PIOB_PPR = 0; //All GPIOs polarity - normal
+	GPIO21_00_DIR |= (1 << 0); //GPIO22 - output
+	GPIO21_00_POL = 0; //All GPIOs polarity - normal
 //	while((IOREG(0x67c) |= (1 << 4), !usleep(100000)) && (IOREG(0x680) |= (1 << 4), !usleep(100000)));
-	PIOB_CODR |= (1 << 0); //GPIO26 - low
+	GPIO21_00_RESET |= (1 << 0); //GPIO26 - low
 	while(g_run) {
 		int i = 1000;
 		while(g_run && i --) {
 			usleep(i);
-			PIOB_TODR |= (1 << 0); //toggle GPIO
+			GPIO21_00_TOG |= (1 << 0); //toggle GPIO
 			usleep(1000 - i);
-			PIOB_TODR |= (1 << 0); //toggle GPIO
+			GPIO21_00_TOG |= (1 << 0); //toggle GPIO
 		}
 		i = 1000;
 		while(g_run && i --) {
 			usleep(1000 - i);
-			PIOB_TODR |= (1 << 0); //toggle GPIO
+			GPIO21_00_TOG |= (1 << 0); //toggle GPIO
 			usleep(i);
-			PIOB_TODR |= (1 << 0); //toggle GPIO
+			GPIO21_00_TOG |= (1 << 0); //toggle GPIO
 		}
 	}
-	PIOB_CODR |= (1 << 0); //GPIO26 - low
+
+	GPIO21_00_RESET |= (1 << 0); //GPIO26 - low
 	munmap((void*)io_base, 4096);
 	fprintf(stderr, "===END===\n");
 	return 0;
