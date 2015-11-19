@@ -38,6 +38,13 @@ static volatile unsigned char* reg_base = 0;
 #define GPIO27_22_RESET				(*(volatile unsigned*)&reg_base[0x680])
 #define GPIO27_22_TOG				(*(volatile unsigned*)&reg_base[0x684])
 
+
+//sht1x clock on GPIO17
+#define SHT1X_CLK_MASK				(1 << 17)
+
+//sht1x sensor data on GPIO21
+#define SHT1X_DATA_MASK				(1 << 21)
+
 static int g_run = 1;
 
 //=============================================================================
