@@ -14,7 +14,6 @@ enum {
 	ERR_DEV,
 };
 
-
 static volatile unsigned char* reg_base = 0;
 
 #define REG_BASE					0x10000000
@@ -40,10 +39,10 @@ static volatile unsigned char* reg_base = 0;
 
 
 //sht1x clock on GPIO17
-#define SHT1X_CLK_MASK				(1 << 17)
+#define SHT1X_SCK					(1 << 17)
 
 //sht1x sensor data on GPIO21
-#define SHT1X_DATA_MASK				(1 << 21)
+#define SHT1X_DATA					(1 << 21)
 
 static int g_run = 1;
 

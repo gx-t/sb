@@ -10,7 +10,7 @@ send/arm:
 	scp sb-001 sb-001.c root@192.168.0.111:
 
 send/mips:
-	scp sb-002 root@192.168.0.115:
+	scp sb-002 root@192.168.0.222:
 
 clean:
 	rm -f sb-001
