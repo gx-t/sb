@@ -24,19 +24,19 @@ ff() {
 	./sb-001 dev sht1x 7 8 0 &
 }
 
-ff | ./sb-001 filter sql `cat key` data -
+ff | ./sb-001 filter sql `cat key` data - | sqlite3 -batch test.db
 
-#data() {
-#		echo -e ".timeout 1000\n.mode insert data\nselect * from data;" |
-#		sqlite3 $dbfile
-#}
-#
-#while sleep 10
-#do
-#	curl -s -X POST -d "$(data)" http://www.seismoinstruments.am/insert.php
-#	echo -e ".timeout 1000\ndelete from data;" | sqlite3 $dbfile
-#done &
-#
+data() {
+		echo -e ".timeout 1000\n.mode insert data\nselect * from data;" |
+		sqlite3 test.db
+}
+
+while sleep 10
+do
+	curl -s -X POST -d "$(data)" http://www.seismoinstruments.am/insert.php
+	echo -e ".timeout 1000\ndelete from data;" | sqlite3 test.db
+done &
+
 #
 #./sb-001 `cat key` 'data' | sqlite3 -batch $dbfile
 #
