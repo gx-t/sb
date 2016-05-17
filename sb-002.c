@@ -9,12 +9,15 @@
 #include <stdint.h>
 #include <signal.h>
 #include <sys/file.h>
+#include <math.h>
 
 enum {
 	ERR_OK = 0,
 	ERR_I2COPEN,
 	ERR_IOCTL,
+	ERR_WRITE_REG,
 	ERR_CALIB,
+	ERR_READING,
 };
 
 #define BMP180_ADDRESS		0x77
@@ -24,165 +27,155 @@ enum {
 #define BMP180_DATAREG		0xF6
 
 static int i2c_fd = -1;
+static int g_run = 0;
 
-static int bmp180_read_calib() {
-	uint8_t buff[32];
-	uint8_t reg = 0xAA;
-	uint8_t cnt = 0;
+static int i2c_read_reg(uint8_t reg, uint8_t* buff, uint8_t count) {
+	int res = -1;
 	if(1 == write(i2c_fd, &reg, 1)) {
-		cnt = read(i2c_fd, buff, 22);
+		res = read(i2c_fd, buff, count);
 	}
-	if(cnt != 22) {
-		fprintf(stderr, "BMP180: Invalid Calibration Data\n");
-		return -1;
-	}
-	int i;
-	printf("==============================\n");
-	for (i = 0; i < cnt; i++) {
-		printf("\t0x%02X\n", buff[i]);
-	}
-	return ERR_OK;
-}
-
-static int bmp180_temp_start() {
-	uint8_t data[2] = {
-		0xF4, 0x2E
-	};
-	return write(i2c_fd, data, 2);
-}
-
-static int bmp180_read() {
-	uint8_t buff[32];
-	uint8_t reg = 0xF6;
-	uint8_t cnt = 0;
-	if(1 == write(i2c_fd, &reg, 1)) {
-		cnt = read(i2c_fd, buff, 3);
-	}
-	if(cnt < 0) {
-		fprintf(stderr, "BMP180: Invalid Reading\n");
-		return -1;
-	}
-	int i;
-	printf("++++++++++++++++++++++++ %d\n", cnt);
-	for (i = 0; i < cnt; i++) {
-		printf("\t0x%02X\n", buff[i]);
-	}
-	return ERR_OK;
-}
-
-static int bmp180_pres_start() {
-	uint8_t data[2] = {
-		0xF4, 0xF4
-	};
-	return write(i2c_fd, data, 2);
+	return res;
 }
 
 static int bmp180_main() {
-//	union i2c_smbus_data data;
-//	struct i2c_smbus_ioctl_data args;
-//	
-//	args.read_write = I2C_SMBUS_READ;
-//	args.data		= &data;
-//	args.command	= BMP180_CALIBREG;
-//	args.size		= I2C_SMBUS_I2C_BLOCK_DATA;
-
+	uint8_t buff[32];
 	if(0 > ioctl(i2c_fd, I2C_SLAVE, BMP180_ADDRESS)) {
 		perror("BMP180 Set I2C Address");
 		return ERR_IOCTL;
 	}
-	bmp180_read_calib();
-	bmp180_temp_start();
-	usleep(100000);
-	bmp180_read();
-	bmp180_pres_start();
-	usleep(100000);
-	bmp180_read();
-//	if(0 > ioctl(i2c_fd, I2C_SMBUS, &args)) {
-//		perror("BMP180 Read Calibration Data");
-//		return ERR_IOCTL;
-//	}
-//
-//	if(data.block[0] != 22) {
-//		fprintf(stderr, "BMP180 Invalid Calibration Info\n");
-//		return ERR_CALIB;
-//	}
-//
-//	int i;
-//	printf("++++%d\n", data.block[0]);
-//	for (i = 1; i <= data.block[0]; i++) {
-//		printf("\t0x%02X\n", data.block[i]);
-//	}
-//
-//	args.read_write = I2C_SMBUS_WRITE;
-//	args.command	= BMP180_CTRLREG;
-//	args.size		= I2C_SMBUS_BYTE_DATA;
-//	data.byte		= BMP180_CTRL_TEMP;
-//	if(0 > ioctl(i2c_fd, I2C_SMBUS, &args)) {
-//		perror("BMP180 Start Temp. Measurement");
-//		return ERR_IOCTL;
-//	}
-//	sleep(1);
-#if 0
-	while(i2c_fd != -1) {
-		do {
-			args.read_write = I2C_SMBUS_WRITE;
-			args.command	= BMP180_CTRLREG;
-			args.size		= I2C_SMBUS_BYTE_DATA;
-			data.byte		= BMP180_CTRL_TEMP;
-			if(0 > ioctl(i2c_fd, I2C_SMBUS, &args)) {
-				perror("BMP180 Start Temp. Measurement");
-				res = ERR_IOCTL;
-				break;
-			}
-		} while(0);
-		usleep(4500);
 
-		do {
-			args.read_write = I2C_SMBUS_READ;
-			args.command	= BMP180_DATAREG;
-			args.size		= I2C_SMBUS_I2C_BLOCK_DATA;
-			if(0 > ioctl(i2c_fd, I2C_SMBUS, &args)) {
-				perror("BMP180 Read Temperature");
-				res = ERR_IOCTL;
-				break;
-			}
-		} while(0);
-
-		sleep(1);
+//read calibration data
+	int cnt = i2c_read_reg(0xAA, buff, 22);
+	if(cnt != 22) {
+		fprintf(stderr, "BMP180: Invalid Calibration Data\n");
+		return ERR_CALIB;
 	}
-#endif
+	short ac1, ac2, ac3, b1, b2, mc, md;
+	unsigned short ac4, ac5, ac6;
+	ac1 = buff[0]  << 8 | buff[1];
+	ac2 = buff[2]  << 8 | buff[3];
+	ac3 = buff[4]  << 8 | buff[5];
+	ac4 = buff[6]  << 8 | buff[7];
+	ac5 = buff[8]  << 8 | buff[9];
+	ac6 = buff[10] << 8 | buff[11];
+	b1  = buff[12] << 8 | buff[13];
+	b2  = buff[14] << 8 | buff[15];
+	mc  = buff[18] << 8 | buff[19];
+	md  = buff[20] << 8 | buff[21];
+
+	float pf = 0;
+	float tf = 0;
+	while(g_run && 0 == sleep(1)) {
+		//init temp. measurement
+		buff[0] = 0xF4;
+		buff[1] = 0x2e;
+		if(2 != write(i2c_fd, buff, 2)) {
+			fprintf(stderr, "BMP180: Cannot Initiate Temperature Measurement\n");
+			return ERR_WRITE_REG;
+		}
+
+		//wait for ADC to complete measurement
+		if(0 != usleep(5000)) {
+			//interrupted by ctrl+C
+			return ERR_OK;
+		}
+
+		//read uncompensated temperarure
+		cnt = i2c_read_reg(0xF6, buff, 2);
+		if(cnt != 2) {
+			fprintf(stderr, "BMP180: Invalid Reading\n");
+			return ERR_READING;
+		}
+		long ut = buff[0] << 8 | buff[1];
+
+		//init pres. measurement
+		buff[0] = 0xF4;
+		buff[1] = 0xF4;
+		if(2 != write(i2c_fd, buff, 2)) {
+			fprintf(stderr, "BMP180: Cannot Initiate Pressure Measurement\n");
+			return ERR_WRITE_REG;
+		}
+
+		//wait for ADC to complete measurement
+		if(0 != usleep(26000)) {
+			//interrupted by ctrl+C
+			return ERR_OK;
+		}
+
+		//read uncompensated pressure
+		cnt = i2c_read_reg(0xF6, buff, 3);
+		if(cnt != 3) {
+			fprintf(stderr, "BMP180: Invalid Reading\n");
+			return ERR_READING;
+		}
+
+		long up = (buff[0] << 16 | buff[1] << 8 | buff[2]) >> 5;
+
+		//calculate true temperature
+		long x1, x2, x3, b3, b5, b6;
+		unsigned long b4, b7;
+		x1 = (ut - 	ac6) * ac5 >> 15;
+		x2 = (mc << 11) / (x1 + md);
+		b5 = x1 + x2;
+		float t = (b5 + 8) >> 4;
+		t /= 10;
+
+		//calculate true pressure
+
+		b6 = b5 - 4000;
+		x1 = (b2 * (b6 * b6 >> 12)) >> 11;
+		x2 = ac2 * b6 >> 11;
+		x3 = x1 + x2;
+
+		b3 = (((ac1 * 4 + x3) << 3) + 2) >> 2;
+		x1 = ac3 * b6 >> 13;
+		x2 = (b1 * (b6 * b6 >> 12)) >> 16;
+		x3 = (x1 + x2 + 2) >> 2;
+		b4 = (ac4 * (x3 + 32768)) >> 15;
+		b7 = (up - b3) * (50000 >> 3);
+
+		long p;
+		if(b7 < 0x80000000)
+			p = (b7 << 1) / b4;
+		else
+			p = (b7 / b4) << 1;
+
+		x1 = (p >> 8) * (p >> 8);
+		x1 = (x1 * 3038) >> 16;
+		x2 = (-7357 * p) >> 16;
+		p += ((x1 + x2 + 3791) >> 4);
+
+		tf += t;;
+		tf /= 2;
+
+		pf += p;
+		pf /= 2;
+
+		float hg = pf * 0.00750062;
+		float hf = 44330 * (1 - pow(pf / 101325, 1.0 / 5.255));
+
+		printf("T=%.1f °C, P=%.2f hPa (%.2f mm, %.1f m)\n", tf, pf / 100, hg, hf);
+	}
+
 	return ERR_OK;
 }
 
-static int i2c_init() {
+static void ctrl_c(int sig) {
+	g_run = 0;
+	signal(SIGINT, ctrl_c);
+}
+
+int main() {
 	static const char* i2c_name = "/dev/i2c-0";
 	i2c_fd = open(i2c_name, O_RDWR);
 	if(i2c_fd < 0) {
 		perror(i2c_name);
 		return ERR_I2COPEN;
 	}
-	return ERR_OK;
-}
-
-static void i2c_release() {
-	if(i2c_fd != -1) {
-		close(i2c_fd);
-		i2c_fd = -1;
-	}
-}
-
-static void ctrl_c(int sig) {
-	i2c_release();
-}
-
-int main() {
-	int res = i2c_init();
-	if(res) {
-		return res;
-	}
+	g_run = 1;
 	signal(SIGINT, ctrl_c);
-	res = bmp180_main();
-	i2c_release();
+	int res = bmp180_main();
+	close(i2c_fd);
 	return res;
 }
 

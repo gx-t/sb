@@ -5,7 +5,7 @@ rel:
 	arm-unknown-linux-gnu-gcc -Wall -O2 -s -o sb-001 sb-001.c
 
 002:
-	mipsel-openwrt-linux-uclibc-gcc -Wall -O2 -s -o sb-002 sb-002.c
+	mipsel-openwrt-linux-uclibc-gcc -Wall -O2 -s -o sb-002 sb-002.c -lm
 
 send/arm:
 	scp sb-001 sb-001.c root@192.168.0.111:
