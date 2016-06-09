@@ -1,9 +1,11 @@
 #include <stdio.h>
+#include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <sys/file.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
 #include <stdint.h>
@@ -13,6 +15,8 @@
 
 enum {
 	ERR_OK = 0,
+	ERR_ARGC,
+	ERR_ARGV,
 	ERR_I2COPEN,
 	ERR_IOCTL,
 	ERR_WRITE_REG,
@@ -28,6 +32,9 @@ enum {
 
 static int i2c_fd = -1;
 static int g_run = 0;
+
+
+static int (*output_proc)(const char* fmt, ...) = printf;
 
 static int i2c_read_reg(uint8_t reg, uint8_t* buff, uint8_t count) {
 	int res = -1;
@@ -154,10 +161,35 @@ static int bmp180_main() {
 		float hg = pf * 0.00750062;
 		float hf = 44330 * (1 - pow(pf / 101325, 1.0 / 5.255));
 
-		printf("T=%.1f °C, P=%.2f hPa (%.2f mm, %.1f m)\n", tf, pf / 100, hg, hf);
+		output_proc("T=%.1f °C, P=%.2f hPa (%.2f mm, %.1f m)\n", tf, pf / 100, hg, hf);
 	}
 
 	return ERR_OK;
+}
+
+static const char* bmp180_data_file = "/tmp/bmp180.log";
+
+static int output_text_file(const char* fmt, ...) {
+
+	FILE* fp = fopen(bmp180_data_file, "w");
+	if(!fp) {
+		perror(bmp180_data_file);
+		return -1;
+	}
+
+	va_list ap;
+	va_start(ap, fmt);
+	
+	int fd = fileno(fp);
+	flock(fd, LOCK_EX);
+
+	int n = vfprintf(fp, fmt, ap);
+	
+	flock(fd, LOCK_UN);
+	va_end(ap);
+
+	fclose(fp);
+	return n;
 }
 
 static void ctrl_c(int sig) {
@@ -165,7 +197,7 @@ static void ctrl_c(int sig) {
 	signal(SIGINT, ctrl_c);
 }
 
-int main() {
+static int sensor_main() {
 	static const char* i2c_name = "/dev/i2c-0";
 	i2c_fd = open(i2c_name, O_RDWR);
 	if(i2c_fd < 0) {
@@ -174,8 +206,37 @@ int main() {
 	}
 	g_run = 1;
 	signal(SIGINT, ctrl_c);
+	output_proc = output_text_file;
 	int res = bmp180_main();
 	close(i2c_fd);
 	return res;
+}
+
+static int cgi_main() {
+	FILE* fp = fopen(bmp180_data_file, "r");
+	if(!fp) {
+		perror(bmp180_data_file);
+	}
+	int fd = fileno(fp);
+	flock(fd, LOCK_EX);
+	char buff[0x100];
+	fgets(buff, sizeof(buff), fp);
+	printf("Content-type: text/plain\n\n%s\n", buff);
+	flock(fd, LOCK_UN);
+	fclose(fp);
+	return ERR_OK;
+}
+
+int main(int argc, char* argv[]) {
+	if(argc != 2) {
+		return ERR_ARGC;
+	}
+	if(*argv[1] == 's') {
+		return sensor_main();
+	}
+	if(*argv[1] == 'c') {
+		return cgi_main();
+	}
+	return ERR_ARGV;
 }
 
