@@ -221,7 +221,7 @@ static int cgi_main() {
 	flock(fd, LOCK_EX);
 	char buff[0x100];
 	fgets(buff, sizeof(buff), fp);
-	printf("Content-type: text/plain\n\n%s\n", buff);
+	printf("Refresh: 3\nContent-type: text/plain\n\n%s\n", buff);
 	flock(fd, LOCK_UN);
 	fclose(fp);
 	return ERR_OK;
